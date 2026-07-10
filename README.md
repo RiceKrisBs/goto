@@ -68,8 +68,23 @@ is expanded):
 export GOTO_ROOT=~/code
 ```
 
-## Notes
+## Caching
 
-- Discovery is done live on every invocation (no cache). It prunes `node_modules`,
-  `.terraform`, and `.git` internals, and takes a few hundred milliseconds — fast
-  enough to be imperceptible for an interactive `cd`.
+To keep jumps instant, `goto` caches the discovered repo list at
+`${XDG_CACHE_HOME:-~/.cache}/goto/index`:
+
+- The **first** call after the cache is empty (or after switching `GOTO_ROOT`)
+  crawls live and writes the cache — a few hundred milliseconds.
+- **Subsequent** calls read the cache (~2ms) and, in the background, kick off a
+  detached re-crawl so newly cloned or removed repos are reflected next time.
+  This means a brand-new repo is picked up on the *second* `gt` after cloning it.
+- The cache records the root it was built for, so changing `GOTO_ROOT`
+  invalidates it automatically.
+
+Force an immediate rebuild any time with:
+
+```sh
+gt --reindex
+```
+
+The crawl prunes `node_modules`, `.terraform`, and `.git` internals.
