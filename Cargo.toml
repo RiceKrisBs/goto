@@ -1,0 +1,15 @@
+[package]
+name = "goto"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "gt-bin"
+path = "src/main.rs"
+
+[dependencies]
+ignore = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
