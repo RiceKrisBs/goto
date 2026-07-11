@@ -1,0 +1,11 @@
+up:
+  - homebrew:
+      - name: fzf
+  - script:
+      title: Install the Rust toolchain
+      satisfied?: command -v cargo >/dev/null 2>&1 || test -x "$HOME/.cargo/bin/cargo"
+      satisfy: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  - script:
+      title: Build and install gt-bin
+      satisfied?: command -v gt-bin >/dev/null 2>&1 || test -x "$HOME/.cargo/bin/gt-bin"
+      satisfy: ./rx_scripts/install.sh

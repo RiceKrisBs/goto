@@ -25,39 +25,30 @@ only *prints* the target path — a small `gt` shell function does the actual `c
 
 ## Install
 
-Requires the [Rust toolchain](https://rustup.rs/) and [`fzf`](https://github.com/junegunn/fzf)
-(for choosing between multiple matches).
+From the repo root, run:
 
-1. Install the binary to `~/.cargo/bin`:
+```sh
+rx dev up
+```
 
-   ```sh
-   cargo install --path .
-   ```
+This installs [`fzf`](https://github.com/junegunn/fzf) (for choosing between
+multiple matches) and the [Rust toolchain](https://rustup.rs/), builds `gt-bin`
+into `~/.cargo/bin`, and copies the `gt` shell function to `~/.goto.zsh`.
 
-   Make sure `~/.cargo/bin` is on your `PATH` (rustup normally adds it).
+`rx` can't modify your shell for you, so one manual step remains. Add this line
+to your `~/.zshrc`, then open a new shell:
 
-2. Add the `gt` shell function to your `~/.zshrc`:
+```zsh
+source "$HOME/.goto.zsh"
+```
 
-   ```zsh
-   # gt <name> — jump to a repo under ~/src by its dir name.
-   gt() {
-     local out target
-     out="$(gt-bin "$@")" || return 1
-     if [[ "$(print -r -- "$out" | wc -l)" -gt 1 ]]; then
-       target="$(print -r -- "$out" | fzf --select-1 --exit-0 --height=40% --reverse)" || return 1
-     else
-       target="$out"
-     fi
-     [[ -n "$target" ]] && cd "$target"
-   }
-   ```
-
-3. Open a new shell (or `source ~/.zshrc`) and try `gt <name>`.
+Try `gt <name>`.
 
 ## Updating
 
 `cargo install` copies the binary; it doesn't track the source. After changing
-the code, re-run `cargo install --path .` to pick up the new build.
+the code, re-run `rx dev up` (or `cargo install --path .`) to pick up the new
+build. Re-running is safe — each step is skipped if it's already satisfied.
 
 ## Configuration
 
