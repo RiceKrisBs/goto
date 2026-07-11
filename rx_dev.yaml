@@ -3,9 +3,17 @@ up:
       - name: fzf
   - script:
       title: Install the Rust toolchain
-      satisfied?: command -v cargo >/dev/null 2>&1 || test -x "$HOME/.cargo/bin/cargo"
-      satisfy: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+      satisfied?: ./rx_scripts/rust.sh --satisfied
+      satisfy: ./rx_scripts/rust.sh --satisfy
   - script:
       title: Build and install gt-bin
-      satisfied?: command -v gt-bin >/dev/null 2>&1 || test -x "$HOME/.cargo/bin/gt-bin"
-      satisfy: ./rx_scripts/install.sh
+      satisfied?: ./rx_scripts/build.sh --satisfied
+      satisfy: ./rx_scripts/build.sh --satisfy
+  - script:
+      title: Install the gt shell function to ~/.goto.zsh
+      satisfied?: ./rx_scripts/shell-fn.sh --satisfied
+      satisfy: ./rx_scripts/shell-fn.sh --satisfy
+  - script:
+      title: Remind the user to source ~/.goto.zsh
+      satisfied?: ./rx_scripts/remind.sh --satisfied
+      satisfy: ./rx_scripts/remind.sh --satisfy
