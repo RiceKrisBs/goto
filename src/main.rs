@@ -42,6 +42,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // `--list` prints every repo the cli is aware of, sorted alphabetically, and
+    // exits. Uses the cache when warm, crawling live otherwise.
+    if args.first().map(|a| a == "--list").unwrap_or(false) {
+        let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
+        for line in format_list(&sorted_repos(&repos)) {
+            println!("{line}");
+        }
+        return ExitCode::SUCCESS;
+    }
+
     let query = match args.first() {
         Some(q) if !q.is_empty() => q.to_lowercase(),
         _ => {
@@ -100,6 +110,35 @@ fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
         .collect();
     fuzzy.sort();
     fuzzy
+}
+
+// Render the `--list` table: two columns, repo name then full path, with the
+// name column padded to the widest name so the paths line up.
+fn format_list(repos: &[&PathBuf]) -> Vec<String> {
+    let rows: Vec<(String, String)> = repos
+        .iter()
+        .map(|p| (list_name(p), p.display().to_string()))
+        .collect();
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(name, path)| format!("{name:<width$}  {path}"))
+        .collect()
+}
+
+// Display name for a repo row: the directory name (case preserved), falling
+// back to the full path for the rootless edge case.
+fn list_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
+}
+
+// All known repos, sorted alphabetically by repo name (the leaf), with the full
+// path as a tiebreaker so same-named repos stay in a stable order.
+fn sorted_repos(repos: &[PathBuf]) -> Vec<&PathBuf> {
+    let mut sorted: Vec<&PathBuf> = repos.iter().collect();
+    sorted.sort_by(|a, b| basename(a).cmp(&basename(b)).then_with(|| a.cmp(b)));
+    sorted
 }
 
 // Search root: $GOTO_ROOT if set (with a leading `~` expanded), else ~/src.
@@ -326,6 +365,51 @@ mod tests {
             names(&match_repos(&r, "aws-redis")),
             ["/src/devops/terraform/modules/aws-redis"]
         );
+    }
+
+    // ---- sorted_repos ----
+
+    #[test]
+    fn sorted_repos_orders_by_leaf_name() {
+        // Sorted by repo name, not path: "alpha" precedes "zeta" even though its
+        // parent dir ("z") sorts after zeta's ("a").
+        let r = repos(&["/src/a/zeta", "/src/z/alpha"]);
+        assert_eq!(names(&sorted_repos(&r)), ["/src/z/alpha", "/src/a/zeta"]);
+    }
+
+    #[test]
+    fn sorted_repos_breaks_name_ties_by_path() {
+        let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
+        assert_eq!(
+            names(&sorted_repos(&r)),
+            ["/src/ai/skills", "/src/kris/skills"]
+        );
+    }
+
+    // ---- format_list ----
+
+    #[test]
+    fn list_pads_names_so_paths_align() {
+        let r = repos(&["/src/devops/ansible", "/src/a/nitro"]);
+        let sorted = sorted_repos(&r);
+        assert_eq!(
+            format_list(&sorted),
+            [
+                "ansible  /src/devops/ansible",
+                "nitro    /src/a/nitro",
+            ]
+        );
+    }
+
+    #[test]
+    fn list_preserves_name_case() {
+        let r = repos(&["/src/a/Nitro"]);
+        assert_eq!(format_list(&sorted_repos(&r)), ["Nitro  /src/a/Nitro"]);
+    }
+
+    #[test]
+    fn list_of_no_repos_is_empty() {
+        assert!(format_list(&[]).is_empty());
     }
 
     // ---- basename ----

@@ -78,4 +78,10 @@ Force an immediate rebuild any time with:
 gt --reindex
 ```
 
+List every repo `goto` is aware of, sorted alphabetically:
+
+```sh
+gt --list
+```
+
 The crawl prunes `node_modules`, `.terraform`, and `.git` internals.
