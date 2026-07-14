@@ -46,9 +46,23 @@ Try `gt <name>`.
 
 ## Updating
 
-`cargo install` copies the binary; it doesn't track the source. After changing
-the code, re-run `rx dev up` (or `cargo install --path .`) to pick up the new
-build. Re-running is safe — each step is skipped if it's already satisfied.
+To pull the latest version, from your clone run:
+
+```sh
+git pull && rx dev up
+```
+
+`rx dev up` rebuilds `gt-bin` and refreshes `~/.goto.zsh` (each step is skipped
+if it's already satisfied, so re-running is safe). If the update changed the
+`gt` shell function, your current shell still has the old one loaded — open a
+new shell, or re-source it in place:
+
+```sh
+source "$HOME/.goto.zsh"
+```
+
+If you've only changed the code locally, `rx dev up` (or `cargo install --path .`)
+picks up the new build the same way.
 
 ## Configuration
 
