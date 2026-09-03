@@ -76,8 +76,16 @@ would jump to it.
 
 Completion is registered automatically when you `source ~/.goto.zsh` — whether
 that happens before or after `compinit` runs. If `compinit` hasn't run yet, goto
-defers registration to the first prompt. You only need `compinit` to run at some
-point during shell startup, which any setup with completions already does.
+defers registration to the first prompt.
+
+It does need `compinit` to run *somewhere* in your shell startup. Frameworks
+like oh-my-zsh do this for you. If `gt <TAB>` doesn't complete (and neither does
+any other command), your shell isn't initializing zsh's completion system at
+all — add this to your `~/.zshrc` and open a new shell:
+
+```zsh
+autoload -Uz compinit && compinit
+```
 
 Two repos that share a name (e.g. `skills` in two namespaces) collapse to a
 single candidate — the name alone can't tell them apart, so completing it and
