@@ -2,6 +2,9 @@
 
 Jump to any git repo under `~/src` by its directory name.
 
+> **Have questions, feedback, bugs, feature requests, or just want to say hi?**
+> Find me in Slack in [#goto-cli](https://fullscript.enterprise.slack.com/archives/C0BUFBA3S03).
+
 ```
 gt nitro          # cd ~/src/git.fullscript.io/ai/nitro
 gt hw-admin       # cd ~/src/git.fullscript.io/developers/hw-admin
