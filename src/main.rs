@@ -12,6 +12,21 @@ use ignore::{WalkBuilder, WalkState};
 
 const PRUNE: &[&str] = &["node_modules", ".terraform", ".git"];
 
+const HELP: &str = "\
+gt — jump to any git repo under your source root by its directory name.
+
+Usage:
+  gt <name>       Jump to the repo whose dir name matches <name> (exact match,
+                  else substring; an fzf picker opens if several match).
+  gt upgrade      Update gt in place from its source clone (only on main).
+  gt --list       List every known repo, with paths.
+  gt --reindex    Rebuild the repo index now.
+  gt --version    Print the version (also: -v).
+  gt --help       Show this help (also: -h).
+
+Tab-complete repo names with <TAB> (zsh). The search root defaults to ~/src;
+override it with $GOTO_ROOT.";
+
 // Cooldown after a refresh lands: skip spawning another background crawl if the
 // cache was rewritten within this window. (This is a post-refresh cooldown keyed
 // on the cache mtime, not a concurrency guard — a burst of calls against an old
@@ -26,6 +41,12 @@ fn main() -> ExitCode {
     // is unset or the root dir is missing.
     if args.first().map(|a| a == "--version" || a == "-v").unwrap_or(false) {
         println!("gt {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
+    // `--help` / `-h` prints usage and exits. Root-independent, like --version.
+    if args.first().map(|a| a == "--help" || a == "-h").unwrap_or(false) {
+        println!("{HELP}");
         return ExitCode::SUCCESS;
     }
 
@@ -82,7 +103,7 @@ fn main() -> ExitCode {
     let query = match args.first() {
         Some(q) if !q.is_empty() => q.to_lowercase(),
         _ => {
-            eprintln!("usage: gt <name>");
+            eprintln!("usage: gt <name>   (see: gt --help)");
             return ExitCode::FAILURE;
         }
     };

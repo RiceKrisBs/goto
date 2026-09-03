@@ -9,6 +9,8 @@ gt secret-sender  # cd ~/src/github.com/Shopify/secret-sender
 gt aws-redis      # cd ~/src/git.fullscript.io/devops/terraform/modules/aws-redis
 ```
 
+Run `gt --help` (or `-h`) for the full list of commands.
+
 ## How it works
 
 `goto` builds a binary called `gt-bin` that walks `~/src`, finds every git repo

@@ -73,7 +73,7 @@ gt() {
     return 0
   fi
   # Informational subcommands print their output straight through — no fzf, no cd.
-  if [[ "$1" == "--list" || "$1" == "--reindex" || "$1" == "--version" || "$1" == "-v" || "$1" == "--source" ]]; then
+  if [[ "$1" == "--list" || "$1" == "--reindex" || "$1" == "--version" || "$1" == "-v" || "$1" == "--source" || "$1" == "--help" || "$1" == "-h" ]]; then
     gt-bin "$@"
     return $?
   fi
