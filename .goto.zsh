@@ -88,13 +88,26 @@ gt() {
 
 # Tab-complete `gt <name>` from the same index the jump uses. Matching is
 # case-insensitive and substring-anywhere (the `l:|=* r:|=*` matcher), to mirror
-# how `gt` itself resolves a name. Only wired up if the completion system is
-# loaded (compinit) — source this after compinit, e.g. after oh-my-zsh.
+# how `gt` itself resolves a name.
+_gt() {
+  local -a repos
+  repos=(${(f)"$(gt-bin --complete 2>/dev/null)"})
+  compadd -M 'm:{a-zA-Z}={A-Za-z} l:|=* r:|=*' -a repos
+}
+
+# Register with the completion system. `compdef` only exists once `compinit` has
+# run, and this file is often sourced from ~/.zshrc *before* a later compinit
+# (e.g. one another tool's completions pull in). So register now if we can;
+# otherwise defer to the first prompt — compinit has run by then — and unhook.
 if (( $+functions[compdef] )); then
-  _gt() {
-    local -a repos
-    repos=(${(f)"$(gt-bin --complete 2>/dev/null)"})
-    compadd -M 'm:{a-zA-Z}={A-Za-z} l:|=* r:|=*' -a repos
-  }
   compdef _gt gt
+else
+  autoload -Uz add-zsh-hook
+  _gt_register() {
+    (( $+functions[compdef] )) || return
+    compdef _gt gt
+    add-zsh-hook -d precmd _gt_register
+    unfunction _gt_register
+  }
+  add-zsh-hook precmd _gt_register
 fi

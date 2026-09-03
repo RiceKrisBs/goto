@@ -5,14 +5,53 @@ Jump to any git repo under `~/src` by its directory name.
 > **Have questions, feedback, bugs, feature requests, or just want to say hi?**
 > Find me in Slack in [#goto-cli](https://fullscript.enterprise.slack.com/archives/C0BUFBA3S03).
 
+## Quickstart
+
+### Install
+
+From the repo root:
+
+```sh
+rx dev up
 ```
+
+This installs [`fzf`](https://github.com/junegunn/fzf) and the
+[Rust toolchain](https://rustup.rs/), builds the `gt-bin` binary into
+`~/.cargo/bin`, and writes the `gt` shell function to `~/.goto.zsh`. `rx` can't
+edit your shell for you, so finish by adding this to your `~/.zshrc` and opening a
+new shell:
+
+```zsh
+source "$HOME/.goto.zsh"
+```
+
+### Use
+
+Jump to a repo by its directory name:
+
+```sh
 gt nitro          # cd ~/src/git.fullscript.io/ai/nitro
 gt hw-admin       # cd ~/src/git.fullscript.io/developers/hw-admin
 gt secret-sender  # cd ~/src/github.com/Shopify/secret-sender
 gt aws-redis      # cd ~/src/git.fullscript.io/devops/terraform/modules/aws-redis
 ```
 
+A partial name works too (`gt adm` → `hw-admin`), and tab completion is built in
+(`gt hw-a<TAB>` → `hw-admin`). If several repos match, an `fzf` picker lets you
+choose.
+
 Run `gt --help` (or `-h`) for the full list of commands.
+
+### Upgrade
+
+From any directory:
+
+```sh
+gt upgrade
+```
+
+This pulls the latest `gt`, rebuilds it, and reloads it into your current shell.
+If you're already up to date, it says so and does nothing.
 
 ## How it works
 
@@ -28,27 +67,6 @@ against the repo's directory name:
 A child process can't change its parent shell's working directory, so `gt-bin`
 only *prints* the target path — a small `gt` shell function does the actual `cd`.
 
-## Install
-
-From the repo root, run:
-
-```sh
-rx dev up
-```
-
-This installs [`fzf`](https://github.com/junegunn/fzf) (for choosing between
-multiple matches) and the [Rust toolchain](https://rustup.rs/), builds `gt-bin`
-into `~/.cargo/bin`, and copies the `gt` shell function to `~/.goto.zsh`.
-
-`rx` can't modify your shell for you, so one manual step remains. Add this line
-to your `~/.zshrc`, then open a new shell:
-
-```zsh
-source "$HOME/.goto.zsh"
-```
-
-Try `gt <name>`.
-
 ## Tab completion
 
 `gt <TAB>` completes repo names from the same index the jump uses. Matching is
@@ -56,43 +74,41 @@ Try `gt <name>`.
 resolves a name — so `gt redis<TAB>` offers `aws-redis`, just as `gt redis`
 would jump to it.
 
-Completion is registered automatically when you `source ~/.goto.zsh`, provided
-zsh's completion system is loaded. Keep the `source` line *after* `compinit`
-runs in your `~/.zshrc` (e.g. after the oh-my-zsh setup). If it's sourced too
-early, jumping still works but `<TAB>` won't complete.
+Completion is registered automatically when you `source ~/.goto.zsh` — whether
+that happens before or after `compinit` runs. If `compinit` hasn't run yet, goto
+defers registration to the first prompt. You only need `compinit` to run at some
+point during shell startup, which any setup with completions already does.
 
 Two repos that share a name (e.g. `skills` in two namespaces) collapse to a
 single candidate — the name alone can't tell them apart, so completing it and
 pressing Enter hands off to the same `fzf` picker used for any ambiguous match.
 
-## Updating
+## Upgrading in depth
 
-Once installed, upgrade in place from any directory with:
+`gt upgrade` brings your install up to date with the clone it was built from. It:
 
-```sh
-gt upgrade
-```
+1. fast-forwards the clone (`git pull --ff-only`),
+2. rebuilds `gt-bin` and refreshes `~/.goto.zsh` (each step skipped when already
+   satisfied), then
+3. re-sources `~/.goto.zsh` so the new function is live in your current shell —
+   no new shell needed.
 
-This pulls the clone `gt` was built from (`--ff-only`), rebuilds `gt-bin`,
-refreshes `~/.goto.zsh`, and re-sources it into your current shell — so the new
-version is live immediately, no new shell needed. It reuses the same install
-scripts as first-time setup (each step skipped when already satisfied), so it
-needs `cargo` but **not** `rx`.
+It reuses the same install scripts as first-time setup, called directly, so it
+needs `cargo` but **not** `rx`. If there's nothing upstream and your installed
+copy already matches the source, it reports `already up to date` and does
+nothing else.
 
-If there's nothing upstream and your installed copy already matches the source,
-`gt upgrade` reports `already up to date` and does nothing else — no rebuild, no
-re-source.
+A couple of guardrails:
 
-`gt upgrade` locates the clone via a path baked into the binary at build time.
-If you've moved the clone since installing, it'll say so — re-run the install
-from the clone's new location to re-stamp it.
+- **It finds the clone** via a path baked into the binary at build time. If
+  you've moved the clone since installing, `gt upgrade` says so — re-run the
+  install from its new location to re-stamp the path.
+- **It only runs on `main`** (a release is what you're upgrading to, not
+  whatever branch you're developing on). On any other branch it refuses —
+  switch to `main`, or rebuild that branch directly with
+  `cargo install --path <clone>`.
 
-It only runs when the clone is on `main` (a release is what you're upgrading to,
-not whatever branch you're developing on). On any other branch it refuses and
-tells you — switch to `main`, or rebuild that branch directly with
-`cargo install --path <clone>`.
-
-Prefer to do it by hand? From the clone, either of these does the same rebuild
+Prefer to upgrade by hand? From the clone, either of these does the same rebuild
 and refresh (the second needs no `rx`):
 
 ```sh
