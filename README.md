@@ -25,6 +25,15 @@ new shell:
 source "$HOME/.goto.zsh"
 ```
 
+### Configure the search root
+
+`goto` searches `~/src` by default. If your repos live somewhere else, point it
+there with `GOTO_ROOT` in your `~/.zshrc` (a leading `~` is expanded):
+
+```sh
+export GOTO_ROOT=~/dev
+```
+
 ### Use
 
 Jump to a repo by its directory name:
@@ -65,7 +74,7 @@ against the repo's directory name:
 - If **nothing** matches, it prints a message and does nothing.
 
 A child process can't change its parent shell's working directory, so `gt-bin`
-only *prints* the target path — a small `gt` shell function does the actual `cd`.
+only _prints_ the target path — a small `gt` shell function does the actual `cd`.
 
 ## Tab completion
 
@@ -78,7 +87,7 @@ Completion is registered automatically when you `source ~/.goto.zsh` — whether
 that happens before or after `compinit` runs. If `compinit` hasn't run yet, goto
 defers registration to the first prompt.
 
-It does need `compinit` to run *somewhere* in your shell startup. Frameworks
+It does need `compinit` to run _somewhere_ in your shell startup. Frameworks
 like oh-my-zsh do this for you. If `gt <TAB>` doesn't complete (and neither does
 any other command), your shell isn't initializing zsh's completion system at
 all — add this to your `~/.zshrc` and open a new shell:
@@ -137,15 +146,6 @@ Check which build is on your `PATH` with:
 gt --version   # or: gt -v
 ```
 
-## Configuration
-
-The search root defaults to `~/src`. Override it with `GOTO_ROOT` (a leading `~`
-is expanded):
-
-```sh
-export GOTO_ROOT=~/code
-```
-
 ## Caching
 
 To keep jumps instant, `goto` caches the discovered repo list at
@@ -155,7 +155,7 @@ To keep jumps instant, `goto` caches the discovered repo list at
   crawls live and writes the cache — a few hundred milliseconds.
 - **Subsequent** calls read the cache (~2ms) and, in the background, kick off a
   detached re-crawl so newly cloned or removed repos are reflected next time.
-  This means a brand-new repo is picked up on the *second* `gt` after cloning it.
+  This means a brand-new repo is picked up on the _second_ `gt` after cloning it.
 - The cache records the root it was built for, so changing `GOTO_ROOT`
   invalidates it automatically.
 
