@@ -44,25 +44,69 @@ source "$HOME/.goto.zsh"
 
 Try `gt <name>`.
 
+## Tab completion
+
+`gt <TAB>` completes repo names from the same index the jump uses. Matching is
+**substring-anywhere** and **case-insensitive**, mirroring how `gt` itself
+resolves a name — so `gt redis<TAB>` offers `aws-redis`, just as `gt redis`
+would jump to it.
+
+Completion is registered automatically when you `source ~/.goto.zsh`, provided
+zsh's completion system is loaded. Keep the `source` line *after* `compinit`
+runs in your `~/.zshrc` (e.g. after the oh-my-zsh setup). If it's sourced too
+early, jumping still works but `<TAB>` won't complete.
+
+Two repos that share a name (e.g. `skills` in two namespaces) collapse to a
+single candidate — the name alone can't tell them apart, so completing it and
+pressing Enter hands off to the same `fzf` picker used for any ambiguous match.
+
 ## Updating
 
-To pull the latest version, from your clone run:
+Once installed, upgrade in place from any directory with:
+
+```sh
+gt upgrade
+```
+
+This pulls the clone `gt` was built from (`--ff-only`), rebuilds `gt-bin`,
+refreshes `~/.goto.zsh`, and re-sources it into your current shell — so the new
+version is live immediately, no new shell needed. It reuses the same install
+scripts as first-time setup (each step skipped when already satisfied), so it
+needs `cargo` but **not** `rx`.
+
+If there's nothing upstream and your installed copy already matches the source,
+`gt upgrade` reports `already up to date` and does nothing else — no rebuild, no
+re-source.
+
+`gt upgrade` locates the clone via a path baked into the binary at build time.
+If you've moved the clone since installing, it'll say so — re-run the install
+from the clone's new location to re-stamp it.
+
+It only runs when the clone is on `main` (a release is what you're upgrading to,
+not whatever branch you're developing on). On any other branch it refuses and
+tells you — switch to `main`, or rebuild that branch directly with
+`cargo install --path <clone>`.
+
+Prefer to do it by hand? From the clone, either of these does the same rebuild
+and refresh (the second needs no `rx`):
 
 ```sh
 git pull && rx dev up
+git pull && ./rx_scripts/build.sh --satisfy && ./rx_scripts/shell-fn.sh --satisfy
 ```
 
-`rx dev up` rebuilds `gt-bin` and refreshes `~/.goto.zsh` (each step is skipped
-if it's already satisfied, so re-running is safe). If the update changed the
-`gt` shell function, your current shell still has the old one loaded — open a
-new shell, or re-source it in place:
+The manual paths don't re-source for you, so if the `gt` shell function changed,
+open a new shell or re-source it:
 
 ```sh
 source "$HOME/.goto.zsh"
 ```
 
-If you've only changed the code locally, `rx dev up` (or `cargo install --path .`)
-picks up the new build the same way.
+Check which build is on your `PATH` with:
+
+```sh
+gt --version   # or: gt -v
+```
 
 ## Configuration
 

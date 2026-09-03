@@ -21,6 +21,22 @@ const REFRESH_DEBOUNCE: Duration = Duration::from_secs(3);
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
+    // `--version` / `-v` prints the version and exits. Handled before root
+    // resolution: you should be able to ask the version even if GOTO_ROOT/HOME
+    // is unset or the root dir is missing.
+    if args.first().map(|a| a == "--version" || a == "-v").unwrap_or(false) {
+        println!("gt {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
+
+    // `--source` prints the clone this binary was built from — the path baked in
+    // at compile time by `cargo install --path .`. `gt upgrade` uses it to find
+    // the clone to pull and rebuild. Also root-independent.
+    if args.first().map(|a| a == "--source").unwrap_or(false) {
+        println!("{}", env!("CARGO_MANIFEST_DIR"));
+        return ExitCode::SUCCESS;
+    }
+
     let root = match resolve_root() {
         Some(root) => root,
         None => {
@@ -48,6 +64,17 @@ fn main() -> ExitCode {
         let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
         for line in format_list(&sorted_repos(&repos)) {
             println!("{line}");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // `--complete` prints just the repo leaf names, one per line: the candidate
+    // list for shell tab completion. Kept cheap (cache read, no background
+    // refresh) since it runs on every keystroke-triggered <TAB>.
+    if args.first().map(|a| a == "--complete").unwrap_or(false) {
+        let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
+        for name in completion_names(&repos) {
+            println!("{name}");
         }
         return ExitCode::SUCCESS;
     }
@@ -123,6 +150,17 @@ fn format_list(repos: &[&PathBuf]) -> Vec<String> {
     rows.iter()
         .map(|(name, path)| format!("{name:<width$}  {path}"))
         .collect()
+}
+
+// Tab-completion candidates: repo leaf names (case preserved), sorted and
+// deduplicated. Two repos sharing a name (e.g. `skills` in two namespaces)
+// collapse to one candidate — the same string can't disambiguate them, so the
+// runtime fzf picker handles the final choice.
+fn completion_names(repos: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = repos.iter().map(|p| list_name(p)).collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup();
+    names
 }
 
 // Display name for a repo row: the directory name (case preserved), falling
@@ -410,6 +448,27 @@ mod tests {
     #[test]
     fn list_of_no_repos_is_empty() {
         assert!(format_list(&[]).is_empty());
+    }
+
+    // ---- completion_names ----
+
+    #[test]
+    fn completion_names_are_sorted_leaf_names() {
+        let r = repos(&["/src/z/nitro", "/src/a/ansible"]);
+        assert_eq!(completion_names(&r), ["ansible", "nitro"]);
+    }
+
+    #[test]
+    fn completion_names_dedup_same_named_repos() {
+        // `skills` in two namespaces collapses to a single candidate.
+        let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
+        assert_eq!(completion_names(&r), ["skills"]);
+    }
+
+    #[test]
+    fn completion_names_preserve_case() {
+        let r = repos(&["/src/a/Nitro"]);
+        assert_eq!(completion_names(&r), ["Nitro"]);
     }
 
     // ---- basename ----
