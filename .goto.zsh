@@ -11,6 +11,22 @@ fi
 # gt <name> — jump to a repo under ~/src by its dir name.
 gt() {
   local out target
+
+  # `gt -` — jump back to where you were before your last `gt` jump. A two-item
+  # toggle scoped to goto: it remembers the full path you left (subdirectory and
+  # all) and ignores any manual `cd`s since, so it always returns you to the
+  # previous repo. Repeating `gt -` bounces between the two. `_GOTO_PREV` is set
+  # only by `gt` jumps below (not by plain `cd`), which is what makes this
+  # "previous repo" rather than "previous directory".
+  if [[ "$1" == "-" ]]; then
+    if [[ -z "$_GOTO_PREV" || ! -d "$_GOTO_PREV" ]]; then
+      print -u2 "gt: no previous directory yet"
+      return 1
+    fi
+    cd "$_GOTO_PREV" && _GOTO_PREV="$OLDPWD"
+    return
+  fi
+
   # `gt upgrade` — bring the install up to date with the clone this binary was
   # built from: pull, rebuild, refresh this file, and re-source it so the new
   # function is live in the current shell (no new shell needed). Runs from any
@@ -83,7 +99,11 @@ gt() {
   else
     target="$out"
   fi
-  [[ -n "$target" ]] && cd "$target"
+  # Record where we're leaving before jumping, so `gt -` can bring us back to
+  # the previous repo. `cd` sets $OLDPWD to the dir we came from on success.
+  if [[ -n "$target" ]]; then
+    cd "$target" && _GOTO_PREV="$OLDPWD"
+  fi
 }
 
 # Tab-complete `gt <name>` from the same index the jump uses. Matching is

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -10,7 +11,10 @@ use std::time::{Duration, SystemTime};
 
 use ignore::{WalkBuilder, WalkState};
 
-const PRUNE: &[&str] = &["node_modules", ".terraform", ".git"];
+// Directories the crawl never descends into: the built-in noise, plus any names
+// the user appends via $GOTO_EXTRA_PRUNE. `.git` is load-bearing — repo
+// detection keys off a `.git` entry, and we never want to walk its internals.
+const DEFAULT_PRUNE: &[&str] = &["node_modules", ".terraform", ".git"];
 
 const HELP: &str = "\
 gt — jump to any git repo under your source root by its directory name.
@@ -18,6 +22,7 @@ gt — jump to any git repo under your source root by its directory name.
 Usage:
   gt <name>       Jump to the repo whose dir name matches <name> (exact match,
                   else substring; an fzf picker opens if several match).
+  gt -            Jump back to the previous repo (toggles with your last jump).
   gt upgrade      Update gt in place from its source clone (only on main).
   gt --list       List every known repo, with paths.
   gt --reindex    Rebuild the repo index now.
@@ -25,7 +30,8 @@ Usage:
   gt --help       Show this help (also: -h).
 
 Tab-complete repo names with <TAB> (zsh). The search root defaults to ~/src;
-override it with $GOTO_ROOT.";
+override it with $GOTO_ROOT. The crawl skips node_modules, .terraform, and .git;
+append more directory names with $GOTO_EXTRA_PRUNE (comma-separated).";
 
 // Cooldown after a refresh lands: skip spawning another background crawl if the
 // cache was rewritten within this window. (This is a post-refresh cooldown keyed
@@ -324,8 +330,27 @@ fn crawl_and_cache(root: &Path) -> Vec<PathBuf> {
     repos
 }
 
+// The set of directory names to prune: the built-in defaults plus any the user
+// appends via $GOTO_EXTRA_PRUNE (comma-separated; whitespace trimmed, empties
+// dropped). Kept pure — takes the raw env value — so it's unit-testable.
+fn prune_set(extra: Option<OsString>) -> HashSet<String> {
+    let mut set: HashSet<String> = DEFAULT_PRUNE.iter().map(|s| s.to_string()).collect();
+    if let Some(extra) = extra {
+        for name in extra.to_string_lossy().split(',') {
+            let name = name.trim();
+            if !name.is_empty() {
+                set.insert(name.to_string());
+            }
+        }
+    }
+    set
+}
+
 fn discover_repos(root: &Path) -> Vec<PathBuf> {
     let found = Mutex::new(Vec::new());
+    // Built once here, then moved into the (Send + Sync + 'static) filter closure
+    // shared across the parallel walk's threads.
+    let prune = prune_set(env::var_os("GOTO_EXTRA_PRUNE"));
 
     WalkBuilder::new(root)
         .hidden(false)
@@ -333,12 +358,12 @@ fn discover_repos(root: &Path) -> Vec<PathBuf> {
         .git_global(false)
         .git_exclude(false)
         .parents(false)
-        .filter_entry(|entry| {
+        .filter_entry(move |entry| {
             // Prune noisy/irrelevant dirs; never descend into them.
             entry
                 .file_name()
                 .to_str()
-                .map(|n| !PRUNE.contains(&n))
+                .map(|n| !prune.contains(n))
                 .unwrap_or(true)
         })
         .build_parallel()
@@ -551,6 +576,41 @@ mod tests {
     #[test]
     fn no_home_and_no_goto_root_is_none() {
         assert_eq!(resolve_root_from(None, None), None);
+    }
+
+    // ---- prune_set ----
+
+    #[test]
+    fn prune_defaults_present_without_env() {
+        let set = prune_set(None);
+        assert!(set.contains("node_modules"));
+        assert!(set.contains(".terraform"));
+        assert!(set.contains(".git"));
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn prune_appends_extra_dirs_to_defaults() {
+        let set = prune_set(Some(OsString::from("vendor,dist")));
+        assert!(set.contains("vendor"));
+        assert!(set.contains("dist"));
+        // Defaults are still pruned alongside the extras.
+        assert!(set.contains("node_modules"));
+        assert_eq!(set.len(), 5);
+    }
+
+    #[test]
+    fn prune_trims_whitespace_and_drops_empties() {
+        let set = prune_set(Some(OsString::from(" vendor , , dist ,")));
+        assert!(set.contains("vendor"));
+        assert!(set.contains("dist"));
+        assert!(!set.contains(""));
+        assert_eq!(set.len(), 5); // 3 defaults + vendor + dist
+    }
+
+    #[test]
+    fn prune_empty_env_adds_nothing() {
+        assert_eq!(prune_set(Some(OsString::new())).len(), 3);
     }
 
     // ---- cache serialization ----

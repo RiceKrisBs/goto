@@ -34,6 +34,19 @@ there with `GOTO_ROOT` in your `~/.zshrc` (a leading `~` is expanded):
 export GOTO_ROOT=~/dev
 ```
 
+### Tune what the crawl skips
+
+The crawl always skips `node_modules`, `.terraform`, and `.git`. To skip more
+directories — matched by name, at any depth — list them comma-separated in
+`GOTO_EXTRA_PRUNE` in your `~/.zshrc`:
+
+```sh
+export GOTO_EXTRA_PRUNE=vendor,dist,.venv
+```
+
+Surrounding whitespace is trimmed, so `vendor, dist, .venv` works too. This only
+adds to the built-in list; the three defaults are always pruned.
+
 ### Use
 
 Jump to a repo by its directory name:
@@ -48,6 +61,16 @@ gt aws-redis      # cd ~/src/git.fullscript.io/devops/terraform/modules/aws-redi
 A partial name works too (`gt adm` → `hw-admin`), and tab completion is built in
 (`gt hw-a<TAB>` → `hw-admin`). If several repos match, an `fzf` picker lets you
 choose.
+
+Bounce back to the repo you were just in — a two-item toggle, like `cd -`:
+
+```sh
+gt -              # back to the repo you jumped from
+```
+
+`gt -` returns you to the exact directory you left (subdirectory and all) before
+your last `gt` jump, and toggles: run it again to come back. It tracks `gt`
+jumps only, so any manual `cd`s in between don't throw it off.
 
 Run `gt --help` (or `-h`) for the full list of commands.
 
@@ -146,6 +169,8 @@ Check which build is on your `PATH` with:
 gt --version   # or: gt -v
 ```
 
+See [`CHANGELOG.md`](CHANGELOG.md) for what changed between versions.
+
 ## Caching
 
 To keep jumps instant, `goto` caches the discovered repo list at
@@ -171,4 +196,6 @@ List every repo `goto` is aware of, sorted alphabetically:
 gt --list
 ```
 
-The crawl prunes `node_modules`, `.terraform`, and `.git` internals.
+The crawl prunes `node_modules`, `.terraform`, and `.git` internals, plus any
+directory names you add via `GOTO_EXTRA_PRUNE` (see
+[Tune what the crawl skips](#tune-what-the-crawl-skips)).
