@@ -1,0 +1,159 @@
+# goto
+
+Jump to any git repo under `~/src` by its directory name.
+
+Requires zsh, on macOS or Linux.
+
+## Quickstart
+
+### Install
+
+```sh
+brew install ricekrisbs/tap/goto
+```
+
+Homebrew can't edit your shell config, so finish by adding this to your
+`~/.zshrc` and opening a new shell:
+
+```zsh
+source "$HOMEBREW_PREFIX/share/goto/goto.zsh"
+```
+
+`$HOMEBREW_PREFIX` is exported by `brew shellenv`. If it isn't set in your
+shell, use the literal path that `brew --prefix` prints.
+
+### Configure the search root
+
+`goto` searches `~/src` by default. If your repos live somewhere else, point it
+there with `GOTO_ROOT` in your `~/.zshrc` (a leading `~` is expanded):
+
+```sh
+export GOTO_ROOT=~/dev
+```
+
+### Tune what the crawl skips
+
+The crawl always skips `node_modules`, `.terraform`, and `.git`. To skip more
+directories — matched by name, at any depth — list them comma-separated in
+`GOTO_EXTRA_PRUNE` in your `~/.zshrc`:
+
+```sh
+export GOTO_EXTRA_PRUNE=vendor,dist,.venv
+```
+
+Surrounding whitespace is trimmed, so `vendor, dist, .venv` works too. This only
+adds to the built-in list; the three defaults are always pruned.
+
+### Use
+
+Jump to a repo by its directory name, wherever it sits in the tree:
+
+```sh
+gt ripgrep    # cd ~/src/github.com/BurntSushi/ripgrep
+gt dotfiles   # cd ~/src/github.com/you/dotfiles
+gt aws-vpc    # cd ~/src/gitlab.com/acme/terraform/modules/aws-vpc
+```
+
+A partial name works too (`gt ripg` → `ripgrep`), and tab completion is built in
+(`gt rip<TAB>` → `ripgrep`). If several repos match, an
+[`fzf`](https://github.com/junegunn/fzf) picker lets you choose.
+
+Bounce back to the repo you were just in — a two-item toggle, like `cd -`:
+
+```sh
+gt -          # back to the repo you jumped from
+```
+
+`gt -` returns you to the exact directory you left (subdirectory and all) before
+your last `gt` jump, and toggles: run it again to come back. It tracks `gt`
+jumps only, so any manual `cd`s in between don't throw it off. It's per-shell —
+a new terminal has no previous repo yet.
+
+Run `gt --help` (or `-h`) for the full list of commands.
+
+## How it works
+
+`goto` installs a binary called `gt-bin` that walks `~/src`, finds every git repo
+(any directory containing a `.git` entry, at any depth), and matches your query
+against the repo's directory name:
+
+- **Exact match** wins (`gt ripgrep` → the dir named exactly `ripgrep`).
+- If there's no exact match, it falls back to a **substring match** (`gt ripg` → `ripgrep`).
+- If **multiple** repos match, it prints them all and an `fzf` picker lets you choose.
+- If **nothing** matches, it prints a message and does nothing.
+
+A child process can't change its parent shell's working directory, so `gt-bin`
+only _prints_ the target path — a small `gt` shell function does the actual `cd`.
+
+## Tab completion
+
+`gt <TAB>` completes repo names from the same index the jump uses. Matching is
+**substring-anywhere** and **case-insensitive**, mirroring how `gt` itself
+resolves a name — so `gt grep<TAB>` offers `ripgrep`, just as `gt grep` would
+jump to it.
+
+Completion needs zsh's completion system initialized somewhere in your shell
+startup. Frameworks like oh-my-zsh do this for you. If `gt <TAB>` doesn't
+complete (and neither does any other command), add this to your `~/.zshrc` and
+open a new shell:
+
+```zsh
+autoload -Uz compinit && compinit
+```
+
+Two repos that share a name (e.g. `dotfiles` in two namespaces) collapse to a
+single candidate — the name alone can't tell them apart, so completing it and
+pressing Enter hands off to the same `fzf` picker used for any ambiguous match.
+
+## Upgrading
+
+```sh
+brew upgrade goto
+```
+
+If the `gt` shell function changed, open a new shell or re-source it:
+
+```zsh
+source "$HOMEBREW_PREFIX/share/goto/goto.zsh"
+```
+
+Check which build is on your `PATH` with:
+
+```sh
+gt --version   # or: gt -v
+```
+
+See [`CHANGELOG.md`](CHANGELOG.md) for what changed between versions.
+
+## Caching
+
+To keep jumps instant, `goto` caches the discovered repo list at
+`${XDG_CACHE_HOME:-~/.cache}/goto/index`:
+
+- The **first** call after the cache is empty (or after switching `GOTO_ROOT`)
+  crawls live and writes the cache — a few hundred milliseconds.
+- **Subsequent** calls read the cache (~2ms) and, in the background, kick off a
+  detached re-crawl so newly cloned or removed repos are reflected next time.
+  This means a brand-new repo is picked up on the _second_ `gt` after cloning it.
+- The cache records the root it was built for, so changing `GOTO_ROOT`
+  invalidates it automatically.
+
+Force an immediate rebuild any time with:
+
+```sh
+gt --reindex
+```
+
+List every repo `goto` is aware of, sorted alphabetically:
+
+```sh
+gt --list
+```
+
+The crawl prunes `node_modules`, `.terraform`, and `.git` internals, plus any
+directory names you add via `GOTO_EXTRA_PRUNE` (see
+[Tune what the crawl skips](#tune-what-the-crawl-skips)).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
