@@ -55,6 +55,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Ordering invariant: everything above this line works without a root;
+    // everything below it requires one. A new root-independent flag added below
+    // here fails with `gt: set GOTO_ROOT or HOME` instead of doing its job.
     let root = match resolve_root() {
         Some(root) => root,
         None => {
@@ -87,8 +90,10 @@ fn main() -> ExitCode {
     }
 
     // `--complete` prints just the repo leaf names, one per line: the candidate
-    // list for shell tab completion. Kept cheap (cache read, no background
-    // refresh) since it runs on every keystroke-triggered <TAB>.
+    // list for shell tab completion. Deliberately off the background-refresh path
+    // since it runs on every keystroke-triggered <TAB>. A warm read is ~3 ms, but
+    // a cold cache still pays for a full crawl (100-500 ms) — self-healing, since
+    // this call writes the cache the next <TAB> reads.
     if args.first().map(|a| a == "--complete").unwrap_or(false) {
         let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
         for name in completion_names(&repos) {
@@ -97,7 +102,13 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Every flag we know has had its chance above, so a leading dash here is a
+    // typo, not a repo name. Rejecting it beats `no repo matching '--lst'`.
     let query = match args.first() {
+        Some(a) if a.starts_with('-') => {
+            eprintln!("gt: unknown option '{a}' (see: gt --help)");
+            return ExitCode::FAILURE;
+        }
         Some(q) if !q.is_empty() => q.to_lowercase(),
         _ => {
             eprintln!("usage: gt <name>   (see: gt --help)");
@@ -123,6 +134,11 @@ fn main() -> ExitCode {
     // Refresh the cache in the background so a newly cloned/removed repo is
     // picked up next time. Only from the warm path (the cold path just wrote a
     // fresh cache), and only if the cache isn't already very fresh.
+    //
+    // Ordering invariant: this must stay ahead of the no-match return below. A
+    // newly cloned repo always misses on the first `gt`, and this refresh is the
+    // only reason the second one finds it. Move it after the return and that
+    // promise silently breaks.
     if warm && cache_older_than(REFRESH_DEBOUNCE) {
         spawn_background_reindex(&root);
     }
@@ -177,7 +193,9 @@ fn format_list(repos: &[&PathBuf]) -> Vec<String> {
 fn completion_names(repos: &[PathBuf]) -> Vec<String> {
     let mut names: Vec<String> = repos.iter().map(|p| list_name(p)).collect();
     names.sort_by_key(|n| n.to_lowercase());
-    names.dedup();
+    // Dedup on the same case-folded key the sort used: plain `dedup()` compares
+    // the case-preserved strings, so `skills` and `Skills` would both survive.
+    names.dedup_by_key(|n| n.to_lowercase());
     names
 }
 
@@ -202,17 +220,20 @@ fn resolve_root() -> Option<PathBuf> {
     resolve_root_from(env::var_os("GOTO_ROOT"), env::var_os("HOME"))
 }
 
+// An empty env value is treated as unset throughout: joining onto "" yields a
+// *relative* path, which would silently point the crawl (and the cache) at $PWD.
 fn resolve_root_from(goto_root: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     if let Some(val) = goto_root {
         if !val.is_empty() {
             return Some(expand_tilde_with(PathBuf::from(val), home.as_deref()));
         }
     }
-    home.map(|home| PathBuf::from(home).join("src"))
+    home.filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join("src"))
 }
 
 fn expand_tilde_with(path: PathBuf, home: Option<&OsStr>) -> PathBuf {
-    let Some(home) = home else {
+    let Some(home) = home.filter(|home| !home.is_empty()) else {
         return path;
     };
     match path.strip_prefix("~") {
@@ -227,11 +248,15 @@ fn basename(p: &Path) -> Option<String> {
 
 // ---- cache ----
 
+// One cache file for every root; the recorded root line is what distinguishes
+// them, so alternating between two $GOTO_ROOTs makes every call a cold crawl.
+// None (no $HOME and no $XDG_CACHE_HOME) disables caching entirely. Empty values
+// count as unset, for the same reason as in `resolve_root_from`.
 fn cache_path() -> Option<PathBuf> {
-    let dir = if let Some(xdg) = env::var_os("XDG_CACHE_HOME") {
+    let dir = if let Some(xdg) = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
         PathBuf::from(xdg)
     } else {
-        PathBuf::from(env::var_os("HOME")?).join(".cache")
+        PathBuf::from(env::var_os("HOME").filter(|v| !v.is_empty())?).join(".cache")
     };
     Some(dir.join("goto").join("index"))
 }
@@ -243,7 +268,14 @@ fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
     body.push_str(&root.display().to_string());
     body.push('\n');
     for r in repos {
-        body.push_str(&r.display().to_string());
+        let line = r.display().to_string();
+        // A newline is indistinguishable from a record separator on read-back,
+        // so such a path can't round-trip: one repo would return as two, the
+        // second of them relative. Skip it rather than cache a lie.
+        if line.contains('\n') {
+            continue;
+        }
+        body.push_str(&line);
         body.push('\n');
     }
     body
@@ -251,6 +283,11 @@ fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
 
 // Parse cached contents, returning the repo list only if the recorded root
 // matches `root`. Any mismatch (or empty input) → None.
+//
+// Only the root line is validated; individual repo paths are taken on trust and
+// may name anywhere on the filesystem. That's fine inside the user's own
+// $XDG_CACHE_HOME, but it means a shared cache directory would let another local
+// user steer `gt`.
 fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
     let mut lines = contents.lines();
     let stored_root = lines.next()?;
@@ -269,6 +306,7 @@ fn read_cache(root: &Path) -> Option<Vec<PathBuf>> {
 fn write_cache(root: &Path, repos: &[PathBuf]) {
     let Some(path) = cache_path() else { return };
     let Some(parent) = path.parent() else { return };
+    let Some(name) = path.file_name() else { return };
     if fs::create_dir_all(parent).is_err() {
         return;
     }
@@ -276,14 +314,21 @@ fn write_cache(root: &Path, repos: &[PathBuf]) {
     let body = serialize_cache(root, repos);
 
     // Write to a per-process temp file, then atomically rename into place so a
-    // concurrent reader never sees a partial file.
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    if let Ok(mut f) = fs::File::create(&tmp) {
-        if f.write_all(body.as_bytes()).is_ok() {
-            let _ = fs::rename(&tmp, &path);
-        }
+    // concurrent reader never sees a partial file. Built with `with_file_name`
+    // rather than `with_extension`, which would *replace* an extension if the
+    // cache filename ever gained one.
+    let tmp = path.with_file_name(format!(
+        "{}.tmp.{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let installed = fs::File::create(&tmp)
+        .is_ok_and(|mut f| f.write_all(body.as_bytes()).is_ok() && fs::rename(&tmp, &path).is_ok());
+    // Only on failure: a successful rename already moved `tmp`, so removing it
+    // unconditionally reads as deleting the file we just installed.
+    if !installed {
+        let _ = fs::remove_file(&tmp);
     }
-    let _ = fs::remove_file(&tmp);
 }
 
 fn cache_older_than(age: Duration) -> bool {
@@ -361,6 +406,10 @@ fn discover_repos(root: &Path) -> Vec<PathBuf> {
         .run(|| {
             let found = &found;
             Box::new(move |result| {
+                // Walk errors (an unreadable directory, most often) are dropped:
+                // that subtree is simply absent from the index and the exit status
+                // stays 0. A repo missing from `gt --list` can mean a permission
+                // problem somewhere on its path.
                 if let Ok(entry) = result {
                     let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                     if is_dir {
@@ -503,6 +552,14 @@ mod tests {
     }
 
     #[test]
+    fn completion_names_dedup_ignores_case() {
+        // Three repos, two distinct casings: still one candidate. The third entry
+        // also catches byte-identical duplicates landing non-adjacent.
+        let r = repos(&["/src/a/skills", "/src/b/Skills", "/src/c/skills"]);
+        assert_eq!(completion_names(&r), ["skills"]);
+    }
+
+    #[test]
     fn completion_names_preserve_case() {
         let r = repos(&["/src/a/Nitro"]);
         assert_eq!(completion_names(&r), ["Nitro"]);
@@ -569,6 +626,23 @@ mod tests {
         assert_eq!(resolve_root_from(None, None), None);
     }
 
+    #[test]
+    fn empty_home_is_treated_as_unset() {
+        // Not Some("src"): joining onto "" would give a relative root, pointing
+        // the crawl at whatever ./src happens to be in $PWD.
+        assert_eq!(resolve_root_from(None, Some(OsString::new())), None);
+        assert_eq!(
+            resolve_root_from(Some(OsString::new()), Some(OsString::new())),
+            None
+        );
+    }
+
+    #[test]
+    fn tilde_with_empty_home_is_left_alone() {
+        let got = expand_tilde_with(PathBuf::from("~/code"), Some(OsStr::new("")));
+        assert_eq!(got, PathBuf::from("~/code"));
+    }
+
     // ---- prune_set ----
 
     #[test]
@@ -629,5 +703,18 @@ mod tests {
     #[test]
     fn empty_contents_is_none() {
         assert_eq!(parse_cache("", Path::new("/home/kris/src")), None);
+    }
+
+    #[test]
+    fn paths_containing_a_newline_are_not_cached() {
+        // The line-delimited format can't round-trip them: `bad\nname` would read
+        // back as `bad` plus a bogus relative `name`.
+        let root = Path::new("/home/kris/src");
+        let r = repos(&["/home/kris/src/bad\nname", "/home/kris/src/ok"]);
+        let serialized = serialize_cache(root, &r);
+        assert_eq!(
+            parse_cache(&serialized, root),
+            Some(repos(&["/home/kris/src/ok"]))
+        );
     }
 }

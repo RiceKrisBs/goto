@@ -136,7 +136,16 @@ To keep jumps instant, `goto` caches the discovered repo list at
   detached re-crawl so newly cloned or removed repos are reflected next time.
   This means a brand-new repo is picked up on the _second_ `gt` after cloning it.
 - The cache records the root it was built for, so changing `GOTO_ROOT`
-  invalidates it automatically.
+  invalidates it automatically. There is only **one** cache file, shared by every
+  root — so if you alternate between two `GOTO_ROOT` values, each call
+  invalidates the other's cache and every call pays for a cold crawl.
+- Caching needs somewhere to write. If `HOME` is unset and `XDG_CACHE_HOME`
+  isn't set either, caching is silently off and **every** call crawls.
+- `goto` trusts its own cache: the recorded root is checked, but the individual
+  repo paths are not, so a cache entry can name any path on the filesystem.
+  That's fine inside your own cache directory, but don't point
+  `XDG_CACHE_HOME` at somewhere other local users can write — they could both
+  read your repo layout and steer `gt`.
 
 Force an immediate rebuild any time with:
 
@@ -153,6 +162,10 @@ gt --list
 The crawl prunes `node_modules`, `.terraform`, and `.git` internals, plus any
 directory names you add via `GOTO_EXTRA_PRUNE` (see
 [Tune what the crawl skips](#tune-what-the-crawl-skips)).
+
+Directories the crawl can't read are skipped silently, and the exit status is
+still 0. If a repo you expect is missing from `gt --list`, check that every
+directory on the way to it is readable.
 
 ## License
 
