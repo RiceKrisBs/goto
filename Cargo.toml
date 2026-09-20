@@ -2,9 +2,12 @@
 name = "goto"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Jump to any git repo under your source root by its directory name."
 license = "MIT"
 repository = "https://github.com/RiceKrisBs/goto"
+readme = "README.md"
+keywords = ["cli", "git", "zsh", "navigation", "fzf"]
 
 [[bin]]
 name = "gt-bin"
@@ -14,5 +17,4 @@ path = "src/main.rs"
 ignore = "0.4"
 
 [profile.release]
-opt-level = 3
 lto = true
