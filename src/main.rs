@@ -44,13 +44,13 @@ fn main() -> ExitCode {
     // `--version` / `-v` prints the version and exits. Handled before root
     // resolution: you should be able to ask the version even if GOTO_ROOT/HOME
     // is unset or the root dir is missing.
-    if args.first().map(|a| a == "--version" || a == "-v").unwrap_or(false) {
+    if args.first().is_some_and(|a| a == "--version" || a == "-v") {
         println!("gt {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
     // `--help` / `-h` prints usage and exits. Root-independent, like --version.
-    if args.first().map(|a| a == "--help" || a == "-h").unwrap_or(false) {
+    if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return ExitCode::SUCCESS;
     }
@@ -71,7 +71,7 @@ fn main() -> ExitCode {
     // `--reindex` is a subcommand, not a repo name: it shares the first-arg slot
     // but forces a synchronous rebuild and exits. Used by the background refresh
     // and by `gt --reindex`.
-    if args.first().map(|a| a == "--reindex").unwrap_or(false) {
+    if args.first().is_some_and(|a| a == "--reindex") {
         let n = crawl_and_cache(&root).len();
         eprintln!("gt: indexed {n} repos under {}", root.display());
         return ExitCode::SUCCESS;
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
 
     // `--list` prints every repo the cli is aware of, sorted alphabetically, and
     // exits. Uses the cache when warm, crawling live otherwise.
-    if args.first().map(|a| a == "--list").unwrap_or(false) {
+    if args.first().is_some_and(|a| a == "--list") {
         let (repos, _) = read_cache_or_crawl(&root);
         for line in format_list(&sorted_repos(&repos)) {
             println!("{line}");
@@ -90,7 +90,7 @@ fn main() -> ExitCode {
     // `--complete` prints just the repo leaf names, one per line: the candidate
     // list for shell tab completion. Off the background-refresh path since it runs
     // on every <TAB>; a cold cache still pays for a full crawl.
-    if args.first().map(|a| a == "--complete").unwrap_or(false) {
+    if args.first().is_some_and(|a| a == "--complete") {
         let (repos, _) = read_cache_or_crawl(&root);
         for name in completion_names(&repos) {
             println!("{name}");
@@ -145,7 +145,7 @@ fn main() -> ExitCode {
 fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
     let mut exact: Vec<&PathBuf> = repos
         .iter()
-        .filter(|p| basename(p).map(|b| b == query).unwrap_or(false))
+        .filter(|p| basename(p).is_some_and(|b| b == query))
         .collect();
     exact.sort();
     if !exact.is_empty() {
@@ -154,7 +154,7 @@ fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
 
     let mut fuzzy: Vec<&PathBuf> = repos
         .iter()
-        .filter(|p| basename(p).map(|b| b.contains(query)).unwrap_or(false))
+        .filter(|p| basename(p).is_some_and(|b| b.contains(query)))
         .collect();
     fuzzy.sort();
     fuzzy
@@ -386,19 +386,19 @@ fn discover_repos(root: &Path, prune: HashSet<String>) -> Vec<PathBuf> {
         .git_exclude(false)
         .parents(false)
         .filter_entry(move |entry| {
-            // Prune noisy/irrelevant dirs; never descend into them.
+            // Prune noisy/irrelevant dirs; never descend into them. A name that
+            // isn't valid UTF-8 can't be matched, so it's kept rather than pruned.
             entry
                 .file_name()
                 .to_str()
-                .map(|n| !prune.contains(n))
-                .unwrap_or(true)
+                .is_none_or(|n| !prune.contains(n))
         })
         .build_parallel()
         .run(|| {
             let found = &found;
             Box::new(move |result| {
                 if let Ok(entry) = result {
-                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
                     if is_dir {
                         let path = entry.path();
                         // A repo is any dir containing a `.git` entry (dir or file).
@@ -547,10 +547,7 @@ mod tests {
         let sorted = sorted_repos(&r);
         assert_eq!(
             format_list(&sorted),
-            [
-                "ansible  /src/devops/ansible",
-                "nitro    /src/a/nitro",
-            ]
+            ["ansible  /src/devops/ansible", "nitro    /src/a/nitro",]
         );
     }
 
@@ -726,7 +723,10 @@ mod tests {
     #[test]
     fn empty_cache_parses_to_no_repos() {
         let serialized = serialize_cache(Path::new("/home/kris/src"), &[]);
-        assert_eq!(parse_cache(&serialized, Path::new("/home/kris/src")), Some(vec![]));
+        assert_eq!(
+            parse_cache(&serialized, Path::new("/home/kris/src")),
+            Some(vec![])
+        );
     }
 
     #[test]
