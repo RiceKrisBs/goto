@@ -5,8 +5,6 @@
 
 # gt <name> — jump to a repo under ~/src by its dir name.
 gt() {
-  # Sourced into arbitrary user configs, so don't inherit their option set
-  # (`setopt nounset` in particular breaks the `_GOTO_PREV` reads below).
   emulate -L zsh
 
   local out target
@@ -27,19 +25,14 @@ gt() {
     return
   fi
 
-  # Any remaining leading-dash argument is a flag for the binary, not a repo
-  # name: `gt -` already returned above, and a repo whose dir name starts with
-  # `-` isn't reachable either way. Print it straight through — no fzf, no cd.
-  # A rule rather than a list of flags, so it can't drift from the binary's set.
+  # A rule, not a list of flags, so it can't drift. `gt -` returned above.
   if [[ "$1" == -* ]]; then
     gt-bin "$@"
     return
   fi
 
   out="$(gt-bin "$@")" || return 1
-  # Split on newlines natively rather than forking `wc -l`, which cost about as
-  # much as the whole binary run. Note `${#${(f)out}}` can't replace the array:
-  # a single-line result collapses to a scalar and yields its character count.
+  # Not `${#${(f)out}}`: one line collapses to a scalar and yields its length.
   candidates=(${(f)out})
   if (( ${#candidates} > 1 )); then
     target="$(print -r -- "$out" | fzf --select-1 --exit-0 --height=40% --reverse)" || return 1
@@ -52,9 +45,7 @@ gt() {
     return 1
   fi
 
-  # Already here: return without touching _GOTO_PREV, which `cd` to the current
-  # directory would otherwise overwrite with $PWD, silently killing `gt -`.
-  # Compares resolved paths, so /A/sub → /A still records /A/sub.
+  # `cd` to $PWD would set OLDPWD to $PWD, overwriting _GOTO_PREV.
   [[ "${target:A}" == "${PWD:A}" ]] && return 0
 
   # Record where we're leaving before jumping, so `gt -` can bring us back to

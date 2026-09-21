@@ -55,9 +55,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Ordering invariant: everything above this line works without a root;
-    // everything below it requires one. A new root-independent flag added below
-    // here fails with `gt: set GOTO_ROOT or HOME` instead of doing its job.
+    // Ordering invariant: flags above this line must work without a root.
     let root = match resolve_root() {
         Some(root) => root,
         None => {
@@ -90,10 +88,8 @@ fn main() -> ExitCode {
     }
 
     // `--complete` prints just the repo leaf names, one per line: the candidate
-    // list for shell tab completion. Deliberately off the background-refresh path
-    // since it runs on every keystroke-triggered <TAB>. A warm read is ~3 ms, but
-    // a cold cache still pays for a full crawl (100-500 ms) — self-healing, since
-    // this call writes the cache the next <TAB> reads.
+    // list for shell tab completion. Off the background-refresh path since it runs
+    // on every <TAB>; a cold cache still pays for a full crawl.
     if args.first().map(|a| a == "--complete").unwrap_or(false) {
         let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
         for name in completion_names(&repos) {
@@ -102,8 +98,6 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Every flag we know has had its chance above, so a leading dash here is a
-    // typo, not a repo name. Rejecting it beats `no repo matching '--lst'`.
     let query = match args.first() {
         Some(a) if a.starts_with('-') => {
             eprintln!("gt: unknown option '{a}' (see: gt --help)");
@@ -135,10 +129,8 @@ fn main() -> ExitCode {
     // picked up next time. Only from the warm path (the cold path just wrote a
     // fresh cache), and only if the cache isn't already very fresh.
     //
-    // Ordering invariant: this must stay ahead of the no-match return below. A
-    // newly cloned repo always misses on the first `gt`, and this refresh is the
-    // only reason the second one finds it. Move it after the return and that
-    // promise silently breaks.
+    // Ordering invariant: must stay ahead of the no-match return below, or a
+    // newly cloned repo is never indexed — the first `gt` for it always misses.
     if warm && cache_older_than(REFRESH_DEBOUNCE) {
         spawn_background_reindex(&root);
     }
@@ -193,8 +185,7 @@ fn format_list(repos: &[&PathBuf]) -> Vec<String> {
 fn completion_names(repos: &[PathBuf]) -> Vec<String> {
     let mut names: Vec<String> = repos.iter().map(|p| list_name(p)).collect();
     names.sort_by_key(|n| n.to_lowercase());
-    // Dedup on the same case-folded key the sort used: plain `dedup()` compares
-    // the case-preserved strings, so `skills` and `Skills` would both survive.
+    // Same key the sort used; plain `dedup()` compares the case-preserved strings.
     names.dedup_by_key(|n| n.to_lowercase());
     names
 }
@@ -220,8 +211,7 @@ fn resolve_root() -> Option<PathBuf> {
     resolve_root_from(env::var_os("GOTO_ROOT"), env::var_os("HOME"))
 }
 
-// An empty env value is treated as unset throughout: joining onto "" yields a
-// *relative* path, which would silently point the crawl (and the cache) at $PWD.
+// An empty value is treated as unset: joining onto "" yields a relative path.
 fn resolve_root_from(goto_root: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
     if let Some(val) = goto_root {
         if !val.is_empty() {
@@ -248,10 +238,7 @@ fn basename(p: &Path) -> Option<String> {
 
 // ---- cache ----
 
-// One cache file for every root; the recorded root line is what distinguishes
-// them, so alternating between two $GOTO_ROOTs makes every call a cold crawl.
-// None (no $HOME and no $XDG_CACHE_HOME) disables caching entirely. Empty values
-// count as unset, for the same reason as in `resolve_root_from`.
+// One cache file for every root; the recorded root line distinguishes them.
 fn cache_path() -> Option<PathBuf> {
     let dir = if let Some(xdg) = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
         PathBuf::from(xdg)
@@ -269,9 +256,7 @@ fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
     body.push('\n');
     for r in repos {
         let line = r.display().to_string();
-        // A newline is indistinguishable from a record separator on read-back,
-        // so such a path can't round-trip: one repo would return as two, the
-        // second of them relative. Skip it rather than cache a lie.
+        // Can't round-trip in a line-delimited format: one repo would read as two.
         if line.contains('\n') {
             continue;
         }
@@ -282,12 +267,8 @@ fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
 }
 
 // Parse cached contents, returning the repo list only if the recorded root
-// matches `root`. Any mismatch (or empty input) → None.
-//
-// Only the root line is validated; individual repo paths are taken on trust and
-// may name anywhere on the filesystem. That's fine inside the user's own
-// $XDG_CACHE_HOME, but it means a shared cache directory would let another local
-// user steer `gt`.
+// matches `root`. Any mismatch (or empty input) → None. Only the root line is
+// validated; the repo paths are taken on trust.
 fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
     let mut lines = contents.lines();
     let stored_root = lines.next()?;
@@ -314,9 +295,7 @@ fn write_cache(root: &Path, repos: &[PathBuf]) {
     let body = serialize_cache(root, repos);
 
     // Write to a per-process temp file, then atomically rename into place so a
-    // concurrent reader never sees a partial file. Built with `with_file_name`
-    // rather than `with_extension`, which would *replace* an extension if the
-    // cache filename ever gained one.
+    // concurrent reader never sees a partial file.
     let tmp = path.with_file_name(format!(
         "{}.tmp.{}",
         name.to_string_lossy(),
@@ -324,8 +303,6 @@ fn write_cache(root: &Path, repos: &[PathBuf]) {
     ));
     let installed = fs::File::create(&tmp)
         .is_ok_and(|mut f| f.write_all(body.as_bytes()).is_ok() && fs::rename(&tmp, &path).is_ok());
-    // Only on failure: a successful rename already moved `tmp`, so removing it
-    // unconditionally reads as deleting the file we just installed.
     if !installed {
         let _ = fs::remove_file(&tmp);
     }
@@ -406,10 +383,6 @@ fn discover_repos(root: &Path) -> Vec<PathBuf> {
         .run(|| {
             let found = &found;
             Box::new(move |result| {
-                // Walk errors (an unreadable directory, most often) are dropped:
-                // that subtree is simply absent from the index and the exit status
-                // stays 0. A repo missing from `gt --list` can mean a permission
-                // problem somewhere on its path.
                 if let Ok(entry) = result {
                     let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
                     if is_dir {

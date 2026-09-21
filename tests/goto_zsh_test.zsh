@@ -1,6 +1,4 @@
-# Tests for the `gt` shell function in goto.zsh.
-#
-#   zsh -f tests/goto_zsh_test.zsh
+# Tests for the `gt` shell function:  zsh -f tests/goto_zsh_test.zsh
 #
 # The -f matters: without it an alias named `gt-bin` or `fzf` in ~/.zshrc is
 # expanded into the stub definitions below at parse time.
@@ -54,8 +52,6 @@ refute_fzf() {
   return 0
 }
 
-# ---- toggle ----
-
 toggle_bounces_between_two_repos() {
   jump_stub; fzf_stub
   cd $TMP/start
@@ -71,8 +67,6 @@ toggle_ignores_manual_cd() {
   cd $TMP/B
   gt -; assert_eq $TMP/start $PWD "gt - should return to the pre-jump dir" || return 1
 }
-
-# ---- repeat jump (A3) ----
 
 repeat_jump_preserves_previous() {
   jump_stub; fzf_stub
@@ -102,8 +96,6 @@ jump_from_subdirectory_records_subdirectory() {
   assert_eq $TMP/A/sub $PWD "gt - should return into the subdirectory" || return 1
 }
 
-# ---- no previous jump (A4) ----
-
 previous_dir_unset_reports_cleanly() {
   setopt nounset
   jump_stub; fzf_stub
@@ -124,8 +116,6 @@ previous_dir_gone_reports_cleanly() {
   assert_eq 1 $? "gt - to a deleted dir should exit 1" || return 1
   assert_eq "gt: no previous directory yet" "$msg" || return 1
 }
-
-# ---- flag passthrough (A2/C4) ----
 
 complete_flag_does_not_cd() {
   fzf_stub
@@ -150,8 +140,6 @@ unknown_flag_passes_through() {
   assert_eq $TMP/start $PWD "an unknown flag must not move the shell" || return 1
 }
 
-# ---- candidate counting (B5) ----
-
 single_candidate_skips_the_picker() {
   fzf_stub
   gt-bin() { print $TMP/B }
@@ -169,8 +157,6 @@ multiple_candidates_use_the_picker() {
   expect_fzf "multiple candidates should invoke fzf" || return 1
   assert_eq $TMP/A $PWD "should have jumped to the picker's choice" || return 1
 }
-
-# ---- empty output (D7) ----
 
 empty_output_is_an_error() {
   fzf_stub
