@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime};
 use ignore::{WalkBuilder, WalkState};
 
 // Directories the crawl never descends into: the built-in noise, plus any names
-// the user appends via $GOTO_EXTRA_PRUNE. `.git` is load-bearing — repo
-// detection keys off a `.git` entry, and we never want to walk its internals.
+// the user appends via $GOTO_EXTRA_PRUNE. The crawl walks hidden entries,
+// so `.git` here prevents it from being walked.
 const DEFAULT_PRUNE: &[&str] = &["node_modules", ".terraform", ".git"];
 
 const HELP: &str = "\
@@ -41,15 +41,13 @@ const REFRESH_DEBOUNCE: Duration = Duration::from_secs(3);
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // `--version` / `-v` prints the version and exits. Handled before root
-    // resolution: you should be able to ask the version even if GOTO_ROOT/HOME
-    // is unset or the root dir is missing.
+    // `--version` / `-v` prints the version and exits.
     if args.first().is_some_and(|a| a == "--version" || a == "-v") {
         println!("gt {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
 
-    // `--help` / `-h` prints usage and exits. Root-independent, like --version.
+    // `--help` / `-h` prints usage and exits.
     if args.first().is_some_and(|a| a == "--help" || a == "-h") {
         println!("{HELP}");
         return ExitCode::SUCCESS;
@@ -69,8 +67,7 @@ fn main() -> ExitCode {
     }
 
     // `--reindex` is a subcommand, not a repo name: it shares the first-arg slot
-    // but forces a synchronous rebuild and exits. Used by the background refresh
-    // and by `gt --reindex`.
+    // but forces a synchronous rebuild and exits.
     if args.first().is_some_and(|a| a == "--reindex") {
         let n = crawl_and_cache(&root).len();
         eprintln!("gt: indexed {n} repos under {}", root.display());
@@ -160,8 +157,7 @@ fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
     fuzzy
 }
 
-// Render the `--list` table: two columns, repo name then full path, with the
-// name column padded to the widest name so the paths line up.
+// Render the `--list` table: two columns, repo name then full path.
 fn format_list(repos: &[&PathBuf]) -> Vec<String> {
     let rows: Vec<(String, String)> = repos
         .iter()
@@ -267,7 +263,7 @@ fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
 
 // Parse cached contents, returning the repo list only if the recorded root
 // matches `root`. Any mismatch (or empty input) → None. Only the root line is
-// validated; the repo paths are taken on trust.
+// validated.
 fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
     let mut lines = contents.lines();
     let stored_root = lines.next()?;
@@ -362,7 +358,7 @@ fn read_cache_or_crawl(root: &Path) -> (Vec<PathBuf>, bool) {
 
 // The set of directory names to prune: the built-in defaults plus any the user
 // appends via $GOTO_EXTRA_PRUNE (comma-separated; whitespace trimmed, empties
-// dropped). Kept pure — takes the raw env value — so it's unit-testable.
+// dropped).
 fn prune_set(extra: Option<OsString>) -> HashSet<String> {
     let mut set: HashSet<String> = DEFAULT_PRUNE.iter().map(|s| s.to_string()).collect();
     if let Some(extra) = extra {
@@ -524,10 +520,10 @@ mod tests {
 
     #[test]
     fn sorted_repos_orders_by_leaf_name() {
-        // Sorted by repo name, not path: "alpha" precedes "zeta" even though its
-        // parent dir ("z") sorts after zeta's ("a").
-        let r = repos(&["/src/a/zeta", "/src/z/alpha"]);
-        assert_eq!(names(&sorted_repos(&r)), ["/src/z/alpha", "/src/a/zeta"]);
+        // Sorted by repo name, not path: "alpha" precedes "zulu" even though its
+        // parent dir ("z") sorts after zulu's ("a").
+        let r = repos(&["/src/a/zulu", "/src/z/alpha"]);
+        assert_eq!(names(&sorted_repos(&r)), ["/src/z/alpha", "/src/a/zulu"]);
     }
 
     #[test]
