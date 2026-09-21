@@ -80,7 +80,7 @@ fn main() -> ExitCode {
     // `--list` prints every repo the cli is aware of, sorted alphabetically, and
     // exits. Uses the cache when warm, crawling live otherwise.
     if args.first().map(|a| a == "--list").unwrap_or(false) {
-        let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
+        let (repos, _) = read_cache_or_crawl(&root);
         for line in format_list(&sorted_repos(&repos)) {
             println!("{line}");
         }
@@ -91,7 +91,7 @@ fn main() -> ExitCode {
     // list for shell tab completion. Off the background-refresh path since it runs
     // on every <TAB>; a cold cache still pays for a full crawl.
     if args.first().map(|a| a == "--complete").unwrap_or(false) {
-        let repos = read_cache(&root).unwrap_or_else(|| crawl_and_cache(&root));
+        let (repos, _) = read_cache_or_crawl(&root);
         for name in completion_names(&repos) {
             println!("{name}");
         }
@@ -110,12 +110,7 @@ fn main() -> ExitCode {
         }
     };
 
-    // Warm path: use the cache if present and built for this root. Cold path:
-    // crawl live and write the cache so the next call is fast.
-    let (repos, warm) = match read_cache(&root) {
-        Some(repos) => (repos, true),
-        None => (crawl_and_cache(&root), false),
-    };
+    let (repos, warm) = read_cache_or_crawl(&root);
 
     // Filter matches by existence: the cache can name a repo that has since been
     // deleted, and we must not hand the shell a path to `cd` into that's gone.
@@ -238,12 +233,16 @@ fn basename(p: &Path) -> Option<String> {
 
 // ---- cache ----
 
-// One cache file for every root; the recorded root line distinguishes them.
 fn cache_path() -> Option<PathBuf> {
-    let dir = if let Some(xdg) = env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
+    cache_path_from(env::var_os("XDG_CACHE_HOME"), env::var_os("HOME"))
+}
+
+// One cache file for every root; the recorded root line distinguishes them.
+fn cache_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let dir = if let Some(xdg) = xdg.filter(|v| !v.is_empty()) {
         PathBuf::from(xdg)
     } else {
-        PathBuf::from(env::var_os("HOME").filter(|v| !v.is_empty())?).join(".cache")
+        PathBuf::from(home.filter(|v| !v.is_empty())?).join(".cache")
     };
     Some(dir.join("goto").join("index"))
 }
@@ -280,12 +279,21 @@ fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
 
 // Returns the cached repo list only if the cache exists and was built for `root`.
 fn read_cache(root: &Path) -> Option<Vec<PathBuf>> {
-    let contents = fs::read_to_string(cache_path()?).ok()?;
+    read_cache_at(&cache_path()?, root)
+}
+
+fn read_cache_at(path: &Path, root: &Path) -> Option<Vec<PathBuf>> {
+    let contents = fs::read_to_string(path).ok()?;
     parse_cache(&contents, root)
 }
 
 fn write_cache(root: &Path, repos: &[PathBuf]) {
-    let Some(path) = cache_path() else { return };
+    if let Some(path) = cache_path() {
+        write_cache_at(&path, root, repos);
+    }
+}
+
+fn write_cache_at(path: &Path, root: &Path, repos: &[PathBuf]) {
     let Some(parent) = path.parent() else { return };
     let Some(name) = path.file_name() else { return };
     if fs::create_dir_all(parent).is_err() {
@@ -302,7 +310,7 @@ fn write_cache(root: &Path, repos: &[PathBuf]) {
         std::process::id()
     ));
     let installed = fs::File::create(&tmp)
-        .is_ok_and(|mut f| f.write_all(body.as_bytes()).is_ok() && fs::rename(&tmp, &path).is_ok());
+        .is_ok_and(|mut f| f.write_all(body.as_bytes()).is_ok() && fs::rename(&tmp, path).is_ok());
     if !installed {
         let _ = fs::remove_file(&tmp);
     }
@@ -338,9 +346,18 @@ fn spawn_background_reindex(root: &Path) {
 
 // Crawl the tree and persist the result, returning the discovered repos.
 fn crawl_and_cache(root: &Path) -> Vec<PathBuf> {
-    let repos = discover_repos(root);
+    let repos = discover_repos(root, prune_set(env::var_os("GOTO_EXTRA_PRUNE")));
     write_cache(root, &repos);
     repos
+}
+
+// Cached repos if the cache is warm and built for this root, else a live crawl
+// that writes it. False means cold: the caller must not then refresh.
+fn read_cache_or_crawl(root: &Path) -> (Vec<PathBuf>, bool) {
+    match read_cache(root) {
+        Some(repos) => (repos, true),
+        None => (crawl_and_cache(root), false),
+    }
 }
 
 // The set of directory names to prune: the built-in defaults plus any the user
@@ -359,11 +376,8 @@ fn prune_set(extra: Option<OsString>) -> HashSet<String> {
     set
 }
 
-fn discover_repos(root: &Path) -> Vec<PathBuf> {
+fn discover_repos(root: &Path, prune: HashSet<String>) -> Vec<PathBuf> {
     let found = Mutex::new(Vec::new());
-    // Built once here, then moved into the (Send + Sync + 'static) filter closure
-    // shared across the parallel walk's threads.
-    let prune = prune_set(env::var_os("GOTO_EXTRA_PRUNE"));
 
     WalkBuilder::new(root)
         .hidden(false)
@@ -403,9 +417,51 @@ fn discover_repos(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
 
     fn repos(paths: &[&str]) -> Vec<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
+    }
+
+    // A fresh directory per test, so the filesystem cases can run in parallel.
+    fn temp_base(name: &str) -> PathBuf {
+        let base = env::temp_dir().join(format!("goto-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    fn build_probe_tree(base: &Path) -> PathBuf {
+        let root = base.join("root");
+        for p in [
+            "normal-repo/.git",
+            "node_modules/pruned-repo/.git",
+            "vendor/vendored-repo/.git",
+            "deep/a/b/c/d/e/f/g/deep-repo/.git",
+            ".hidden-dir/hidden-repo/.git",
+            "spaces in name/.git",
+        ] {
+            fs::create_dir_all(root.join(p)).unwrap();
+        }
+
+        // `.git` as a file, i.e. a worktree or submodule.
+        fs::create_dir_all(root.join("worktree-repo")).unwrap();
+        fs::write(root.join("worktree-repo/.git"), "gitdir: /elsewhere\n").unwrap();
+
+        fs::create_dir_all(base.join("elsewhere/linked-repo/.git")).unwrap();
+        symlink(base.join("elsewhere/linked-repo"), root.join("linked-repo")).unwrap();
+
+        root
+    }
+
+    fn discovered_names(root: &Path, extra_prune: Option<&str>) -> Vec<String> {
+        let prune = prune_set(extra_prune.map(OsString::from));
+        let mut names: Vec<String> = discover_repos(root, prune)
+            .iter()
+            .map(|p| list_name(p))
+            .collect();
+        names.sort();
+        names
     }
 
     fn names(matched: &[&PathBuf]) -> Vec<String> {
@@ -689,5 +745,108 @@ mod tests {
             parse_cache(&serialized, root),
             Some(repos(&["/home/kris/src/ok"]))
         );
+    }
+
+    // ---- discover_repos ----
+
+    #[test]
+    fn discover_repos_finds_repos_and_prunes_noise() {
+        let base = temp_base("discover");
+        let root = build_probe_tree(&base);
+        assert_eq!(
+            discovered_names(&root, None),
+            [
+                "deep-repo",
+                "hidden-repo",
+                "normal-repo",
+                "spaces in name",
+                "vendored-repo",
+                "worktree-repo",
+            ]
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn discover_repos_skips_symlinked_repos() {
+        let base = temp_base("symlink");
+        let root = build_probe_tree(&base);
+        let names = discovered_names(&root, None);
+        assert!(root.join("linked-repo/.git").exists());
+        assert!(!names.contains(&"linked-repo".to_string()), "got {names:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn discover_repos_honours_extra_prune() {
+        let base = temp_base("extra-prune");
+        let root = build_probe_tree(&base);
+        let names = discovered_names(&root, Some("vendor"));
+        assert!(
+            !names.contains(&"vendored-repo".to_string()),
+            "got {names:?}"
+        );
+        assert!(names.contains(&"normal-repo".to_string()), "got {names:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ---- cache_path_from ----
+
+    #[test]
+    fn cache_path_prefers_xdg() {
+        let got = cache_path_from(Some(OsString::from("/x")), Some(OsString::from("/h")));
+        assert_eq!(got, Some(PathBuf::from("/x/goto/index")));
+    }
+
+    #[test]
+    fn cache_path_falls_back_to_home_dot_cache() {
+        let got = cache_path_from(None, Some(OsString::from("/h")));
+        assert_eq!(got, Some(PathBuf::from("/h/.cache/goto/index")));
+    }
+
+    #[test]
+    fn cache_path_treats_empty_values_as_unset() {
+        let got = cache_path_from(Some(OsString::new()), Some(OsString::from("/h")));
+        assert_eq!(got, Some(PathBuf::from("/h/.cache/goto/index")));
+        assert_eq!(cache_path_from(None, Some(OsString::new())), None);
+    }
+
+    #[test]
+    fn cache_path_without_xdg_or_home_is_none() {
+        assert_eq!(cache_path_from(None, None), None);
+    }
+
+    // ---- cache file I/O ----
+
+    #[test]
+    fn cache_round_trips_through_the_filesystem() {
+        let base = temp_base("cache-rt");
+        let path = base.join("goto").join("index");
+        let root = Path::new("/home/kris/src");
+        let r = repos(&["/home/kris/src/a/nitro", "/home/kris/src/b/hw-admin"]);
+
+        write_cache_at(&path, root, &r);
+        assert!(
+            path.exists(),
+            "write_cache_at should create missing parents"
+        );
+        assert_eq!(read_cache_at(&path, root), Some(r));
+        assert_eq!(read_cache_at(&path, Path::new("/other/root")), None);
+
+        let leftovers: Vec<String> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "left {leftovers:?} behind");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reading_a_missing_cache_file_is_none() {
+        let base = temp_base("cache-missing");
+        assert_eq!(read_cache_at(&base.join("absent"), Path::new("/r")), None);
+        let _ = fs::remove_dir_all(&base);
     }
 }
