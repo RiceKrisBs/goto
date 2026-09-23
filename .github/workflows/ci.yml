@@ -17,7 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - run: rustup component add rustfmt clippy
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -29,9 +31,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
       - name: Install zsh
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
       - run: cargo test
       - name: Shell function tests
         run: zsh -f tests/goto_zsh_test.zsh
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --locked
