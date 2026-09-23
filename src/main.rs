@@ -130,8 +130,18 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
 fn run(command: RootedCommand, root: &Path) -> ExitCode {
     match command {
         RootedCommand::Reindex => {
-            let n = crawl_and_cache(root).len();
-            eprintln!("gt: indexed {n} repos under {}", root.display());
+            let repos = crawl(root);
+            let Some(path) = cache_path() else {
+                eprintln!("gt: nowhere to write the index (set XDG_CACHE_HOME or HOME)");
+                return ExitCode::FAILURE;
+            };
+            if !write_cache_at(&path, root, &repos) {
+                eprintln!("gt: could not write the index to {}", path.display());
+                return ExitCode::FAILURE;
+            }
+            let n = repos.len();
+            let noun = if n == 1 { "repo" } else { "repos" };
+            eprintln!("gt: indexed {n} {noun} under {}", root.display());
         }
         RootedCommand::List => {
             let (repos, _) = read_cache_or_crawl(root);
@@ -337,11 +347,15 @@ fn write_cache(root: &Path, repos: &[PathBuf]) {
     }
 }
 
-fn write_cache_at(path: &Path, root: &Path, repos: &[PathBuf]) {
-    let Some(parent) = path.parent() else { return };
-    let Some(name) = path.file_name() else { return };
+fn write_cache_at(path: &Path, root: &Path, repos: &[PathBuf]) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let Some(name) = path.file_name() else {
+        return false;
+    };
     if fs::create_dir_all(parent).is_err() {
-        return;
+        return false;
     }
 
     let body = serialize_cache(root, repos);
@@ -358,6 +372,7 @@ fn write_cache_at(path: &Path, root: &Path, repos: &[PathBuf]) {
     if !installed {
         let _ = fs::remove_file(&tmp);
     }
+    installed
 }
 
 fn cache_older_than(age: Duration) -> bool {
@@ -388,9 +403,12 @@ fn spawn_background_reindex(root: &Path) {
         .spawn();
 }
 
-// Crawl the tree and persist the result, returning the discovered repos.
+fn crawl(root: &Path) -> Vec<PathBuf> {
+    discover_repos(root, prune_set(env::var_os("GOTO_EXTRA_PRUNE")))
+}
+
 fn crawl_and_cache(root: &Path) -> Vec<PathBuf> {
-    let repos = discover_repos(root, prune_set(env::var_os("GOTO_EXTRA_PRUNE")));
+    let repos = crawl(root);
     write_cache(root, &repos);
     repos
 }
@@ -951,7 +969,7 @@ mod tests {
         let root = Path::new("/home/kris/src");
         let r = repos(&["/home/kris/src/a/nitro", "/home/kris/src/b/hw-admin"]);
 
-        write_cache_at(&path, root, &r);
+        assert!(write_cache_at(&path, root, &r));
         assert!(
             path.exists(),
             "write_cache_at should create missing parents"
@@ -966,6 +984,15 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "left {leftovers:?} behind");
 
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn unwritable_cache_reports_failure() {
+        let base = temp_base("cache-unwritable");
+        fs::write(base.join("file"), "").unwrap();
+        let path = base.join("file/goto/index");
+        assert!(!write_cache_at(&path, Path::new("/r"), &repos(&["/r/a"])));
         let _ = fs::remove_dir_all(&base);
     }
 
