@@ -194,6 +194,11 @@ List every repo `goto` is aware of, sorted alphabetically:
 gt --list
 ```
 
+`gt --list` and tab completion show the cache as-is, so a repo you've deleted
+keeps appearing there until the next re-crawl (any `gt <name>`, or
+`gt --reindex`). Jumping is unaffected: `gt <name>` skips paths that no longer
+exist.
+
 The crawl prunes `node_modules`, `.terraform`, and `.git` internals, plus any
 directory names you add via `GOTO_EXTRA_PRUNE` (see
 [Tune what the crawl skips](#tune-what-the-crawl-skips)).
@@ -201,6 +206,10 @@ directory names you add via `GOTO_EXTRA_PRUNE` (see
 Directories the crawl can't read are skipped silently, and the exit status is
 still 0. If a repo you expect is missing from `gt --list`, check that every
 directory on the way to it is readable.
+
+The crawl doesn't follow symlinks, so a repo reached through a symlinked
+directory isn't found. A repo nested inside another (a vendored checkout, say)
+is indexed alongside its parent.
 
 ## License
 

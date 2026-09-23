@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::Write;
+use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -31,6 +31,11 @@ Usage:
 Tab-complete repo names with <TAB> (zsh). The search root defaults to ~/src;
 override it with $GOTO_ROOT. The crawl skips node_modules, .terraform, and .git;
 append more directory names with $GOTO_EXTRA_PRUNE (comma-separated).";
+
+const SOURCE_HINT: &str = "\
+gt-bin is the backend for the `gt` shell function. To define `gt`, add this to
+your ~/.zshrc and open a new shell:
+  source \"$HOMEBREW_PREFIX/share/goto/goto.zsh\"";
 
 // Cooldown after a refresh lands: skip spawning another background crawl if the
 // cache was rewritten within this window. (This is a post-refresh cooldown keyed
@@ -95,14 +100,14 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let query = match args.first() {
-        Some(a) if a.starts_with('-') => {
-            eprintln!("gt: unknown option '{a}' (see: gt --help)");
-            return ExitCode::FAILURE;
-        }
-        Some(q) if !q.is_empty() => q.to_lowercase(),
-        _ => {
-            eprintln!("usage: gt <name>   (see: gt --help)");
+    let query = match parse_query(&args) {
+        Ok(q) => q,
+        Err(msg) => {
+            eprintln!("{msg}");
+            // The `gt` function captures stdout, so a terminal means gt-bin was run directly.
+            if args.is_empty() && io::stdout().is_terminal() {
+                eprintln!("{SOURCE_HINT}");
+            }
             return ExitCode::FAILURE;
         }
     };
@@ -136,6 +141,17 @@ fn main() -> ExitCode {
         println!("{}", p.display());
     }
     ExitCode::SUCCESS
+}
+
+fn parse_query(args: &[String]) -> Result<String, String> {
+    match args {
+        [a, ..] if a.starts_with('-') => Err(format!("gt: unknown option '{a}' (see: gt --help)")),
+        [q] if !q.is_empty() => Ok(q.to_lowercase()),
+        [q, extra, ..] if !q.is_empty() => Err(format!(
+            "gt: unexpected argument '{extra}' (see: gt --help)"
+        )),
+        _ => Err("usage: gt <name>   (see: gt --help)".to_string()),
+    }
 }
 
 // Exact basename match (case-insensitive), then substring fallback.
@@ -462,6 +478,37 @@ mod tests {
 
     fn names(matched: &[&PathBuf]) -> Vec<String> {
         matched.iter().map(|p| p.display().to_string()).collect()
+    }
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ---- parse_query ----
+
+    #[test]
+    fn query_is_lowercased() {
+        assert_eq!(parse_query(&args(&["Nitro"])), Ok("nitro".into()));
+    }
+
+    #[test]
+    fn extra_argument_is_rejected() {
+        let err = parse_query(&args(&["foo", "bar"])).unwrap_err();
+        assert!(err.contains("unexpected argument 'bar'"), "got {err:?}");
+    }
+
+    #[test]
+    fn unknown_option_is_rejected() {
+        let err = parse_query(&args(&["--lst"])).unwrap_err();
+        assert!(err.contains("unknown option '--lst'"), "got {err:?}");
+    }
+
+    #[test]
+    fn missing_or_empty_query_is_usage() {
+        for a in [args(&[]), args(&[""]), args(&["", "bar"])] {
+            let err = parse_query(&a).unwrap_err();
+            assert!(err.starts_with("usage:"), "{a:?} gave {err:?}");
+        }
     }
 
     // ---- match_repos ----
