@@ -158,7 +158,7 @@ fn parse_query(args: &[String]) -> Result<String, String> {
 fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
     let mut exact: Vec<&PathBuf> = repos
         .iter()
-        .filter(|p| basename(p).is_some_and(|b| b == query))
+        .filter(|p| match_key(p).is_some_and(|b| b == query))
         .collect();
     exact.sort();
     if !exact.is_empty() {
@@ -167,7 +167,7 @@ fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
 
     let mut fuzzy: Vec<&PathBuf> = repos
         .iter()
-        .filter(|p| basename(p).is_some_and(|b| b.contains(query)))
+        .filter(|p| match_key(p).is_some_and(|b| b.contains(query)))
         .collect();
     fuzzy.sort();
     fuzzy
@@ -177,7 +177,7 @@ fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
 fn format_list(repos: &[&PathBuf]) -> Vec<String> {
     let rows: Vec<(String, String)> = repos
         .iter()
-        .map(|p| (list_name(p), p.display().to_string()))
+        .map(|p| (display_name(p), p.display().to_string()))
         .collect();
     let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
     rows.iter()
@@ -190,7 +190,7 @@ fn format_list(repos: &[&PathBuf]) -> Vec<String> {
 // collapse to one candidate — the same string can't disambiguate them, so the
 // runtime fzf picker handles the final choice.
 fn completion_names(repos: &[PathBuf]) -> Vec<String> {
-    let mut names: Vec<String> = repos.iter().map(|p| list_name(p)).collect();
+    let mut names: Vec<String> = repos.iter().map(|p| display_name(p)).collect();
     names.sort_by_key(|n| n.to_lowercase());
     // Same key the sort used; plain `dedup()` compares the case-preserved strings.
     names.dedup_by_key(|n| n.to_lowercase());
@@ -199,7 +199,7 @@ fn completion_names(repos: &[PathBuf]) -> Vec<String> {
 
 // Display name for a repo row: the directory name (case preserved), falling
 // back to the full path for the rootless edge case.
-fn list_name(p: &Path) -> String {
+fn display_name(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| p.display().to_string())
@@ -209,7 +209,7 @@ fn list_name(p: &Path) -> String {
 // path as a tiebreaker so same-named repos stay in a stable order.
 fn sorted_repos(repos: &[PathBuf]) -> Vec<&PathBuf> {
     let mut sorted: Vec<&PathBuf> = repos.iter().collect();
-    sorted.sort_by(|a, b| basename(a).cmp(&basename(b)).then_with(|| a.cmp(b)));
+    sorted.sort_by(|a, b| match_key(a).cmp(&match_key(b)).then_with(|| a.cmp(b)));
     sorted
 }
 
@@ -239,7 +239,8 @@ fn expand_tilde_with(path: PathBuf, home: Option<&OsStr>) -> PathBuf {
     }
 }
 
-fn basename(p: &Path) -> Option<String> {
+// The leaf name lowercased, for matching and sorting; see `display_name` for output.
+fn match_key(p: &Path) -> Option<String> {
     p.file_name().map(|n| n.to_string_lossy().to_lowercase())
 }
 
@@ -470,7 +471,7 @@ mod tests {
         let prune = prune_set(extra_prune.map(OsString::from));
         let mut names: Vec<String> = discover_repos(root, prune)
             .iter()
-            .map(|p| list_name(p))
+            .map(|p| display_name(p))
             .collect();
         names.sort();
         names
@@ -634,11 +635,11 @@ mod tests {
         assert_eq!(completion_names(&r), ["Nitro"]);
     }
 
-    // ---- basename ----
+    // ---- match_key ----
 
     #[test]
-    fn basename_lowercases_leaf() {
-        assert_eq!(basename(Path::new("/a/B/Nitro")), Some("nitro".into()));
+    fn match_key_lowercases_leaf() {
+        assert_eq!(match_key(Path::new("/a/B/Nitro")), Some("nitro".into()));
     }
 
     // ---- expand_tilde_with ----
