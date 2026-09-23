@@ -168,6 +168,16 @@ empty_output_is_an_error() {
   assert_eq $TMP/start $PWD "empty binary output must not move the shell" || return 1
 }
 
+completion_only_offers_the_first_argument() {
+  gt-bin() { print -l alpha beta }
+  local offered=0
+  compadd() { offered=1 }
+  local CURRENT=2; _gt
+  assert_eq 1 $offered "gt <TAB> should offer repo names" || return 1
+  offered=0; CURRENT=3; _gt
+  assert_eq 0 $offered "gt foo <TAB> must not offer repo names" || return 1
+}
+
 # ---- against the real binary: set GT_BIN (e.g. target/debug/gt-bin) ----
 
 real_bin() {
@@ -221,6 +231,7 @@ tests=(
   single_candidate_skips_the_picker
   multiple_candidates_use_the_picker
   empty_output_is_an_error
+  completion_only_offers_the_first_argument
 )
 if [[ -n ${GT_BIN-} ]]; then
   [[ -x $GT_BIN ]] || { print -u2 "GT_BIN is not executable: $GT_BIN"; exit 1 }

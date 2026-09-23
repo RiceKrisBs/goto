@@ -35,7 +35,7 @@ gt() {
   # Not `${#${(f)out}}`: one line collapses to a scalar and yields its length.
   candidates=(${(f)out})
   if (( ${#candidates} > 1 )); then
-    target="$(print -r -- "$out" | fzf --select-1 --exit-0 --height=40% --reverse)" || return 1
+    target="$(print -r -- "$out" | fzf --height=40% --reverse)" || return 1
   else
     target="$out"
   fi
@@ -57,6 +57,7 @@ gt() {
 # case-insensitive and substring-anywhere (the `l:|=* r:|=*` matcher), to mirror
 # how `gt` itself resolves a name.
 _gt() {
+  (( CURRENT == 2 )) || return 1
   local -a repos
   repos=(${(f)"$(gt-bin --complete 2>/dev/null)"})
   compadd -M 'm:{a-zA-Z}={A-Za-z} l:|=* r:|=*' -a repos
