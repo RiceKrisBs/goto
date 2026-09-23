@@ -154,7 +154,9 @@ fn run(command: RootedCommand, root: &Path) -> ExitCode {
 
 fn jump(root: &Path, query: &str) -> ExitCode {
     let (repos, warm) = read_cache_or_crawl(root);
-    let matches = existing_matches(&repos, query);
+    // The cache can name a repo that has since been deleted; the shell must not
+    // be handed a path to `cd` into that's gone.
+    let matches = match_repos(&repos, query, Path::exists);
 
     // Refresh the cache in the background so a newly cloned/removed repo is
     // picked up next time. Only from the warm path (the cold path just wrote a
@@ -177,33 +179,27 @@ fn jump(root: &Path, query: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-// The cache can name a repo that has since been deleted, and the shell must not
-// be handed a path to `cd` into that's gone. The background refresh drops it
-// from the index for next time.
-fn existing_matches<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
-    match_repos(repos, query)
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect()
-}
-
-// Exact basename match (case-insensitive), then substring fallback.
-fn match_repos<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
-    let mut exact: Vec<&PathBuf> = repos
-        .iter()
-        .filter(|p| match_key(p).is_some_and(|b| b == query))
-        .collect();
-    exact.sort();
-    if !exact.is_empty() {
-        return exact;
+// Exact name match, else substring. `keep` runs per tier and only on name
+// matches, so a rejected exact match falls through to the substring tier.
+fn match_repos<'a>(
+    repos: &'a [PathBuf],
+    query: &str,
+    keep: impl Fn(&Path) -> bool,
+) -> Vec<&'a PathBuf> {
+    let tier = |hit: &dyn Fn(&str) -> bool| {
+        let mut found: Vec<&PathBuf> = repos
+            .iter()
+            .filter(|p| match_key(p).is_some_and(|k| hit(&k)) && keep(p))
+            .collect();
+        found.sort();
+        found
+    };
+    let exact = tier(&|k| k == query);
+    if exact.is_empty() {
+        tier(&|k| k.contains(query))
+    } else {
+        exact
     }
-
-    let mut fuzzy: Vec<&PathBuf> = repos
-        .iter()
-        .filter(|p| match_key(p).is_some_and(|b| b.contains(query)))
-        .collect();
-    fuzzy.sort();
-    fuzzy
 }
 
 // Render the `--list` table: two columns, repo name then full path.
@@ -510,8 +506,12 @@ mod tests {
         names
     }
 
-    fn names(matched: &[&PathBuf]) -> Vec<String> {
-        matched.iter().map(|p| p.display().to_string()).collect()
+    fn names(found: &[&PathBuf]) -> Vec<String> {
+        found.iter().map(|p| p.display().to_string()).collect()
+    }
+
+    fn matched<'a>(r: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
+        match_repos(r, query, |_| true)
     }
 
     fn args(a: &[&str]) -> Vec<String> {
@@ -568,35 +568,48 @@ mod tests {
         }
     }
 
-    // ---- existing_matches ----
+    // ---- match_repos ----
 
     #[test]
     fn deleted_repos_are_not_jump_targets() {
         let base = temp_base("existing");
         fs::create_dir_all(base.join("a/nitro")).unwrap();
         let r = vec![base.join("a/nitro"), base.join("b/nitro")];
-        assert_eq!(existing_matches(&r, "nitro"), [&base.join("a/nitro")]);
+        assert_eq!(
+            match_repos(&r, "nitro", Path::exists),
+            [&base.join("a/nitro")]
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
-    // ---- match_repos ----
+    #[test]
+    fn deleted_exact_match_falls_back_to_substring() {
+        let base = temp_base("fallback");
+        fs::create_dir_all(base.join("b/nitro-tools")).unwrap();
+        let r = vec![base.join("a/nitro"), base.join("b/nitro-tools")];
+        assert_eq!(
+            match_repos(&r, "nitro", Path::exists),
+            [&base.join("b/nitro-tools")]
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn exact_basename_match() {
         let r = repos(&["/src/a/nitro", "/src/b/other"]);
-        assert_eq!(names(&match_repos(&r, "nitro")), ["/src/a/nitro"]);
+        assert_eq!(names(&matched(&r, "nitro")), ["/src/a/nitro"]);
     }
 
     #[test]
     fn match_is_case_insensitive() {
         let r = repos(&["/src/a/Nitro"]);
-        assert_eq!(names(&match_repos(&r, "nitro")), ["/src/a/Nitro"]);
+        assert_eq!(names(&matched(&r, "nitro")), ["/src/a/Nitro"]);
     }
 
     #[test]
     fn falls_back_to_substring_when_no_exact_match() {
         let r = repos(&["/src/developers/hw-admin", "/src/x/unrelated"]);
-        assert_eq!(names(&match_repos(&r, "adm")), ["/src/developers/hw-admin"]);
+        assert_eq!(names(&matched(&r, "adm")), ["/src/developers/hw-admin"]);
     }
 
     #[test]
@@ -604,14 +617,14 @@ mod tests {
         // "skills" is both an exact name and a substring of "skills-extra";
         // only the exact match should be returned.
         let r = repos(&["/src/a/skills", "/src/b/skills-extra"]);
-        assert_eq!(names(&match_repos(&r, "skills")), ["/src/a/skills"]);
+        assert_eq!(names(&matched(&r, "skills")), ["/src/a/skills"]);
     }
 
     #[test]
     fn ambiguous_exact_matches_return_all_sorted() {
         let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
         assert_eq!(
-            names(&match_repos(&r, "skills")),
+            names(&matched(&r, "skills")),
             ["/src/ai/skills", "/src/kris/skills"]
         );
     }
@@ -619,14 +632,14 @@ mod tests {
     #[test]
     fn no_match_returns_empty() {
         let r = repos(&["/src/a/nitro"]);
-        assert!(match_repos(&r, "zzz").is_empty());
+        assert!(matched(&r, "zzz").is_empty());
     }
 
     #[test]
     fn matches_deeply_nested_repo() {
         let r = repos(&["/src/devops/terraform/modules/aws-redis"]);
         assert_eq!(
-            names(&match_repos(&r, "aws-redis")),
+            names(&matched(&r, "aws-redis")),
             ["/src/devops/terraform/modules/aws-redis"]
         );
     }
