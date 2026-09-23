@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{self, ExitCode, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -43,22 +43,51 @@ your ~/.zshrc and open a new shell:
 // cache can still spawn overlapping crawls, which is cheap enough not to matter.)
 const REFRESH_DEBOUNCE: Duration = Duration::from_secs(3);
 
+const USAGE: &str = "usage: gt <name>   (see: gt --help)";
+
+#[derive(Debug, PartialEq)]
+enum Command {
+    Version,
+    Help,
+    Rooted(RootedCommand),
+}
+
+// Only these get a search root, so a command that needs one can't be run without it.
+#[derive(Debug, PartialEq)]
+enum RootedCommand {
+    Reindex,
+    List,
+    Complete,
+    Jump(String),
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
 
-    // `--version` / `-v` prints the version and exits.
-    if args.first().is_some_and(|a| a == "--version" || a == "-v") {
-        println!("gt {}", env!("CARGO_PKG_VERSION"));
-        return ExitCode::SUCCESS;
-    }
+    let command = match parse_command(&args) {
+        Ok(command) => command,
+        Err(msg) => {
+            eprintln!("{msg}");
+            // The `gt` function captures stdout, so a terminal means gt-bin was run directly.
+            if args.is_empty() && io::stdout().is_terminal() {
+                eprintln!("{SOURCE_HINT}");
+            }
+            return ExitCode::FAILURE;
+        }
+    };
 
-    // `--help` / `-h` prints usage and exits.
-    if args.first().is_some_and(|a| a == "--help" || a == "-h") {
-        println!("{HELP}");
-        return ExitCode::SUCCESS;
-    }
+    let command = match command {
+        Command::Version => {
+            println!("gt {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Command::Help => {
+            println!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Command::Rooted(command) => command,
+    };
 
-    // Ordering invariant: flags above this line must work without a root.
     let root = match resolve_root() {
         Some(root) => root,
         None => {
@@ -71,56 +100,61 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // `--reindex` is a subcommand, not a repo name: it shares the first-arg slot
-    // but forces a synchronous rebuild and exits.
-    if args.first().is_some_and(|a| a == "--reindex") {
-        let n = crawl_and_cache(&root).len();
-        eprintln!("gt: indexed {n} repos under {}", root.display());
-        return ExitCode::SUCCESS;
-    }
+    run(command, &root)
+}
 
-    // `--list` prints every repo the cli is aware of, sorted alphabetically, and
-    // exits. Uses the cache when warm, crawling live otherwise.
-    if args.first().is_some_and(|a| a == "--list") {
-        let (repos, _) = read_cache_or_crawl(&root);
-        for line in format_list(&sorted_repos(&repos)) {
-            println!("{line}");
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    // `--complete` prints just the repo leaf names, one per line: the candidate
-    // list for shell tab completion. Off the background-refresh path since it runs
-    // on every <TAB>; a cold cache still pays for a full crawl.
-    if args.first().is_some_and(|a| a == "--complete") {
-        let (repos, _) = read_cache_or_crawl(&root);
-        for name in completion_names(&repos) {
-            println!("{name}");
-        }
-        return ExitCode::SUCCESS;
-    }
-
-    let query = match parse_query(&args) {
-        Ok(q) => q,
-        Err(msg) => {
-            eprintln!("{msg}");
-            // The `gt` function captures stdout, so a terminal means gt-bin was run directly.
-            if args.is_empty() && io::stdout().is_terminal() {
-                eprintln!("{SOURCE_HINT}");
-            }
-            return ExitCode::FAILURE;
-        }
+fn parse_command(args: &[String]) -> Result<Command, String> {
+    let Some((first, rest)) = args.split_first() else {
+        return Err(USAGE.to_string());
     };
+    let command = match first.as_str() {
+        "--version" | "-v" => Command::Version,
+        "--help" | "-h" => Command::Help,
+        "--reindex" => Command::Rooted(RootedCommand::Reindex),
+        "--list" => Command::Rooted(RootedCommand::List),
+        "--complete" => Command::Rooted(RootedCommand::Complete),
+        "" => return Err(USAGE.to_string()),
+        a if a.starts_with('-') => {
+            return Err(format!("gt: unknown option '{a}' (see: gt --help)"));
+        }
+        q => Command::Rooted(RootedCommand::Jump(q.to_lowercase())),
+    };
+    if let Some(extra) = rest.first() {
+        return Err(format!(
+            "gt: unexpected argument '{extra}' (see: gt --help)"
+        ));
+    }
+    Ok(command)
+}
 
-    let (repos, warm) = read_cache_or_crawl(&root);
+fn run(command: RootedCommand, root: &Path) -> ExitCode {
+    match command {
+        RootedCommand::Reindex => {
+            let n = crawl_and_cache(root).len();
+            eprintln!("gt: indexed {n} repos under {}", root.display());
+        }
+        RootedCommand::List => {
+            let (repos, _) = read_cache_or_crawl(root);
+            for line in format_list(&sorted_repos(&repos)) {
+                println!("{line}");
+            }
+        }
+        // Off the background-refresh path since it runs on every <TAB>; a cold
+        // cache still pays for a full crawl.
+        RootedCommand::Complete => {
+            let (repos, _) = read_cache_or_crawl(root);
+            for name in completion_names(&repos) {
+                println!("{name}");
+            }
+        }
+        RootedCommand::Jump(query) => return jump(root, &query),
+    }
+    ExitCode::SUCCESS
+}
 
-    // Filter matches by existence: the cache can name a repo that has since been
-    // deleted, and we must not hand the shell a path to `cd` into that's gone.
-    // The background refresh drops it from the index for next time.
-    let matches: Vec<&PathBuf> = match_repos(&repos, &query)
-        .into_iter()
-        .filter(|p| p.exists())
-        .collect();
+fn jump(root: &Path, query: &str) -> ExitCode {
+    let (repos, warm) = read_cache_or_crawl(root);
+    let matches = existing_matches(&repos, query);
 
     // Refresh the cache in the background so a newly cloned/removed repo is
     // picked up next time. Only from the warm path (the cold path just wrote a
@@ -129,7 +163,7 @@ fn main() -> ExitCode {
     // Ordering invariant: must stay ahead of the no-match return below, or a
     // newly cloned repo is never indexed — the first `gt` for it always misses.
     if warm && cache_older_than(REFRESH_DEBOUNCE) {
-        spawn_background_reindex(&root);
+        spawn_background_reindex(root);
     }
 
     if matches.is_empty() {
@@ -143,15 +177,14 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn parse_query(args: &[String]) -> Result<String, String> {
-    match args {
-        [a, ..] if a.starts_with('-') => Err(format!("gt: unknown option '{a}' (see: gt --help)")),
-        [q] if !q.is_empty() => Ok(q.to_lowercase()),
-        [q, extra, ..] if !q.is_empty() => Err(format!(
-            "gt: unexpected argument '{extra}' (see: gt --help)"
-        )),
-        _ => Err("usage: gt <name>   (see: gt --help)".to_string()),
-    }
+// The cache can name a repo that has since been deleted, and the shell must not
+// be handed a path to `cd` into that's gone. The background refresh drops it
+// from the index for next time.
+fn existing_matches<'a>(repos: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
+    match_repos(repos, query)
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect()
 }
 
 // Exact basename match (case-insensitive), then substring fallback.
@@ -347,7 +380,7 @@ fn cache_older_than(age: Duration) -> bool {
 // control / SIGHUP doesn't reach it). We never wait on it.
 fn spawn_background_reindex(root: &Path) {
     let Ok(exe) = env::current_exe() else { return };
-    let _ = Command::new(exe)
+    let _ = process::Command::new(exe)
         .arg("--reindex")
         .env("GOTO_ROOT", root)
         .stdin(Stdio::null())
@@ -485,31 +518,65 @@ mod tests {
         a.iter().map(|s| s.to_string()).collect()
     }
 
-    // ---- parse_query ----
+    // ---- parse_command ----
 
     #[test]
-    fn query_is_lowercased() {
-        assert_eq!(parse_query(&args(&["Nitro"])), Ok("nitro".into()));
+    fn flags_parse_to_their_commands() {
+        use RootedCommand::*;
+        for (flag, want) in [
+            ("--version", Command::Version),
+            ("-v", Command::Version),
+            ("--help", Command::Help),
+            ("-h", Command::Help),
+            ("--reindex", Command::Rooted(Reindex)),
+            ("--list", Command::Rooted(List)),
+            ("--complete", Command::Rooted(Complete)),
+        ] {
+            assert_eq!(parse_command(&args(&[flag])), Ok(want), "{flag}");
+        }
+    }
+
+    #[test]
+    fn a_name_is_a_lowercased_jump() {
+        assert_eq!(
+            parse_command(&args(&["Nitro"])),
+            Ok(Command::Rooted(RootedCommand::Jump("nitro".into())))
+        );
     }
 
     #[test]
     fn extra_argument_is_rejected() {
-        let err = parse_query(&args(&["foo", "bar"])).unwrap_err();
-        assert!(err.contains("unexpected argument 'bar'"), "got {err:?}");
+        for a in [args(&["foo", "bar"]), args(&["--list", "bar"])] {
+            let err = parse_command(&a).unwrap_err();
+            assert!(
+                err.contains("unexpected argument 'bar'"),
+                "{a:?} gave {err:?}"
+            );
+        }
     }
 
     #[test]
     fn unknown_option_is_rejected() {
-        let err = parse_query(&args(&["--lst"])).unwrap_err();
+        let err = parse_command(&args(&["--lst"])).unwrap_err();
         assert!(err.contains("unknown option '--lst'"), "got {err:?}");
     }
 
     #[test]
     fn missing_or_empty_query_is_usage() {
         for a in [args(&[]), args(&[""]), args(&["", "bar"])] {
-            let err = parse_query(&a).unwrap_err();
-            assert!(err.starts_with("usage:"), "{a:?} gave {err:?}");
+            assert_eq!(parse_command(&a), Err(USAGE.to_string()), "{a:?}");
         }
+    }
+
+    // ---- existing_matches ----
+
+    #[test]
+    fn deleted_repos_are_not_jump_targets() {
+        let base = temp_base("existing");
+        fs::create_dir_all(base.join("a/nitro")).unwrap();
+        let r = vec![base.join("a/nitro"), base.join("b/nitro")];
+        assert_eq!(existing_matches(&r, "nitro"), [&base.join("a/nitro")]);
+        let _ = fs::remove_dir_all(&base);
     }
 
     // ---- match_repos ----
