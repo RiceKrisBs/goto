@@ -242,9 +242,11 @@ fn sorted_repos(repos: &[PathBuf]) -> Vec<&PathBuf> {
     sorted
 }
 
-// Search root: $GOTO_ROOT if set (with a leading `~` expanded), else ~/src.
+// Absolute because the cache stores the root: a relative one would match any
+// directory that happens to have the same relative path.
 fn resolve_root() -> Option<PathBuf> {
-    resolve_root_from(env::var_os("GOTO_ROOT"), env::var_os("HOME"))
+    let root = resolve_root_from(env::var_os("GOTO_ROOT"), env::var_os("HOME"))?;
+    std::path::absolute(root).ok()
 }
 
 // An empty value is treated as unset: joining onto "" yields a relative path.

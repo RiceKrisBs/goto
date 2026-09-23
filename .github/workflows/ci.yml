@@ -36,8 +36,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
       - run: cargo test
+      - run: cargo build
       - name: Shell function tests
         run: zsh -f tests/goto_zsh_test.zsh
+        env:
+          GT_BIN: target/debug/gt-bin
 
   msrv:
     runs-on: ubuntu-latest

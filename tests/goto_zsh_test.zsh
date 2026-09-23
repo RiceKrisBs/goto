@@ -10,6 +10,7 @@ GOTO_ZSH=${GOTO_ZSH:-${0:A:h}/../goto.zsh}
 source $GOTO_ZSH
 
 TMP=$(mktemp -d)
+TMP=${TMP:A}
 trap 'rm -rf $TMP' EXIT
 mkdir -p $TMP/start $TMP/A/sub $TMP/B
 
@@ -167,20 +168,68 @@ empty_output_is_an_error() {
   assert_eq $TMP/start $PWD "empty binary output must not move the shell" || return 1
 }
 
-for t in \
-  toggle_bounces_between_two_repos \
-  toggle_ignores_manual_cd \
-  repeat_jump_preserves_previous \
-  repeat_jump_succeeds_quietly \
-  jump_from_subdirectory_records_subdirectory \
-  previous_dir_unset_reports_cleanly \
-  previous_dir_gone_reports_cleanly \
-  complete_flag_does_not_cd \
-  unknown_flag_passes_through \
-  single_candidate_skips_the_picker \
-  multiple_candidates_use_the_picker \
+# ---- against the real binary: set GT_BIN (e.g. target/debug/gt-bin) ----
+
+real_bin() {
+  unfunction gt-bin 2>/dev/null
+  # One match per case, so reaching the picker means stdout had extra lines.
+  fzf() { print -u2 "    fzf was invoked"; return 1 }
+  path=(${GT_BIN:A:h} $path)
+  export XDG_CACHE_HOME=$(mktemp -d $TMP/cache.XXXX)
+}
+
+real_binary_jumps() {
+  real_bin
+  mkdir -p $TMP/root/x/alpha/.git $TMP/root/y/beta/.git
+  export GOTO_ROOT=$TMP/root
+  cd $TMP/start
+  gt alpha
+  assert_eq $TMP/root/x/alpha $PWD "should have jumped to alpha" || return 1
+  assert_eq $TMP/start "$_GOTO_PREV" "should record where we came from" || return 1
+}
+
+real_binary_miss_stays_put() {
+  real_bin
+  mkdir -p $TMP/root/x/alpha/.git
+  export GOTO_ROOT=$TMP/root
+  cd $TMP/start
+  gt nope 2>/dev/null
+  assert_eq 1 $? "a miss should exit 1" || return 1
+  assert_eq $TMP/start $PWD "a miss must not move the shell" || return 1
+}
+
+relative_root_follows_pwd() {
+  real_bin
+  mkdir -p $TMP/w1/src/one/.git $TMP/w2/src/two/.git
+  export GOTO_ROOT=src
+  cd $TMP/w1; gt one
+  assert_eq $TMP/w1/src/one $PWD "should find w1's repo" || return 1
+  cd $TMP/w2; gt two 2>/dev/null
+  assert_eq $TMP/w2/src/two $PWD "w1's cache must not answer for w2" || return 1
+}
+
+tests=(
+  toggle_bounces_between_two_repos
+  toggle_ignores_manual_cd
+  repeat_jump_preserves_previous
+  repeat_jump_succeeds_quietly
+  jump_from_subdirectory_records_subdirectory
+  previous_dir_unset_reports_cleanly
+  previous_dir_gone_reports_cleanly
+  complete_flag_does_not_cd
+  unknown_flag_passes_through
+  single_candidate_skips_the_picker
+  multiple_candidates_use_the_picker
   empty_output_is_an_error
-do
+)
+if [[ -n ${GT_BIN-} ]]; then
+  [[ -x $GT_BIN ]] || { print -u2 "GT_BIN is not executable: $GT_BIN"; exit 1 }
+  tests+=(real_binary_jumps real_binary_miss_stays_put relative_root_follows_pwd)
+else
+  print "  (set GT_BIN to also run the tests against the real binary)"
+fi
+
+for t in $tests; do
   run $t
 done
 
