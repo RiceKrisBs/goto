@@ -212,7 +212,6 @@ fn match_repos<'a>(
     }
 }
 
-// Render the `--list` table: two columns, repo name then full path.
 fn format_list(repos: &[&PathBuf]) -> Vec<String> {
     let rows: Vec<(String, String)> = repos
         .iter()
@@ -285,7 +284,7 @@ fn match_key(p: &Path) -> Option<String> {
     p.file_name().map(|n| n.to_string_lossy().to_lowercase())
 }
 
-// ---- cache ----
+// ---- cache and crawl ----
 
 fn cache_path() -> Option<PathBuf> {
     cache_path_from(env::var_os("XDG_CACHE_HOME"), env::var_os("HOME"))
@@ -302,7 +301,7 @@ fn cache_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<Path
 }
 
 // Cache format: line 1 is the root the cache was built for, remaining lines are
-// repo paths. Splitting the (de)serialization out keeps it pure and testable.
+// repo paths.
 fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
     let mut body = String::new();
     body.push_str(&root.display().to_string());
@@ -331,7 +330,6 @@ fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
     Some(lines.filter(|l| !l.is_empty()).map(PathBuf::from).collect())
 }
 
-// Returns the cached repo list only if the cache exists and was built for `root`.
 fn read_cache(root: &Path) -> Option<Vec<PathBuf>> {
     read_cache_at(&cache_path()?, root)
 }
@@ -413,8 +411,8 @@ fn crawl_and_cache(root: &Path) -> Vec<PathBuf> {
     repos
 }
 
-// Cached repos if the cache is warm and built for this root, else a live crawl
-// that writes it. False means cold: the caller must not then refresh.
+// False means cold: the crawl just wrote a fresh cache, so the caller must not
+// then refresh.
 fn read_cache_or_crawl(root: &Path) -> (Vec<PathBuf>, bool) {
     match read_cache(root) {
         Some(repos) => (repos, true),
@@ -422,9 +420,6 @@ fn read_cache_or_crawl(root: &Path) -> (Vec<PathBuf>, bool) {
     }
 }
 
-// The set of directory names to prune: the built-in defaults plus any the user
-// appends via $GOTO_EXTRA_PRUNE (comma-separated; whitespace trimmed, empties
-// dropped).
 fn prune_set(extra: Option<OsString>) -> HashSet<String> {
     let mut set: HashSet<String> = DEFAULT_PRUNE.iter().map(|s| s.to_string()).collect();
     if let Some(extra) = extra {
@@ -526,7 +521,7 @@ mod tests {
         names
     }
 
-    fn names(found: &[&PathBuf]) -> Vec<String> {
+    fn paths(found: &[&PathBuf]) -> Vec<String> {
         found.iter().map(|p| p.display().to_string()).collect()
     }
 
@@ -615,36 +610,34 @@ mod tests {
     }
 
     #[test]
-    fn exact_basename_match() {
+    fn exact_name_match() {
         let r = repos(&["/src/a/nitro", "/src/b/other"]);
-        assert_eq!(names(&matched(&r, "nitro")), ["/src/a/nitro"]);
+        assert_eq!(paths(&matched(&r, "nitro")), ["/src/a/nitro"]);
     }
 
     #[test]
     fn match_is_case_insensitive() {
         let r = repos(&["/src/a/Nitro"]);
-        assert_eq!(names(&matched(&r, "nitro")), ["/src/a/Nitro"]);
+        assert_eq!(paths(&matched(&r, "nitro")), ["/src/a/Nitro"]);
     }
 
     #[test]
     fn falls_back_to_substring_when_no_exact_match() {
         let r = repos(&["/src/developers/hw-admin", "/src/x/unrelated"]);
-        assert_eq!(names(&matched(&r, "adm")), ["/src/developers/hw-admin"]);
+        assert_eq!(paths(&matched(&r, "adm")), ["/src/developers/hw-admin"]);
     }
 
     #[test]
     fn exact_match_wins_over_substring() {
-        // "skills" is both an exact name and a substring of "skills-extra";
-        // only the exact match should be returned.
         let r = repos(&["/src/a/skills", "/src/b/skills-extra"]);
-        assert_eq!(names(&matched(&r, "skills")), ["/src/a/skills"]);
+        assert_eq!(paths(&matched(&r, "skills")), ["/src/a/skills"]);
     }
 
     #[test]
     fn ambiguous_exact_matches_return_all_sorted() {
         let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
         assert_eq!(
-            names(&matched(&r, "skills")),
+            paths(&matched(&r, "skills")),
             ["/src/ai/skills", "/src/kris/skills"]
         );
     }
@@ -659,7 +652,7 @@ mod tests {
     fn matches_deeply_nested_repo() {
         let r = repos(&["/src/devops/terraform/modules/aws-redis"]);
         assert_eq!(
-            names(&matched(&r, "aws-redis")),
+            paths(&matched(&r, "aws-redis")),
             ["/src/devops/terraform/modules/aws-redis"]
         );
     }
@@ -671,14 +664,14 @@ mod tests {
         // Sorted by repo name, not path: "alpha" precedes "zulu" even though its
         // parent dir ("z") sorts after zulu's ("a").
         let r = repos(&["/src/a/zulu", "/src/z/alpha"]);
-        assert_eq!(names(&sorted_repos(&r)), ["/src/z/alpha", "/src/a/zulu"]);
+        assert_eq!(paths(&sorted_repos(&r)), ["/src/z/alpha", "/src/a/zulu"]);
     }
 
     #[test]
     fn sorted_repos_breaks_name_ties_by_path() {
         let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
         assert_eq!(
-            names(&sorted_repos(&r)),
+            paths(&sorted_repos(&r)),
             ["/src/ai/skills", "/src/kris/skills"]
         );
     }
@@ -829,7 +822,6 @@ mod tests {
         let set = prune_set(Some(OsString::from("vendor,dist")));
         assert!(set.contains("vendor"));
         assert!(set.contains("dist"));
-        // Defaults are still pruned alongside the extras.
         assert!(set.contains("node_modules"));
         assert_eq!(set.len(), 5);
     }
@@ -840,7 +832,7 @@ mod tests {
         assert!(set.contains("vendor"));
         assert!(set.contains("dist"));
         assert!(!set.contains(""));
-        assert_eq!(set.len(), 5); // 3 defaults + vendor + dist
+        assert_eq!(set.len(), 5);
     }
 
     #[test]

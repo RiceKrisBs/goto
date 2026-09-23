@@ -3,18 +3,13 @@
 # Installed by Homebrew. Source it from your ~/.zshrc:
 #   source "$HOMEBREW_PREFIX/share/goto/goto.zsh"
 
-# gt <name> — jump to a repo under ~/src by its dir name.
 gt() {
   emulate -L zsh
 
   local out target
   local -a candidates
 
-  # `gt -` — jump back to where you were before your last `gt` jump. A two-item
-  # toggle scoped to goto: it remembers the full path you left (subdirectory and
-  # all) and ignores any manual `cd`s since, so it always returns you to the
-  # previous repo. Repeating `gt -` bounces between the two. `_GOTO_PREV` is set
-  # only by `gt` jumps below (not by plain `cd`), which is what makes this
+  # `_GOTO_PREV` is set only by `gt` jumps, not by plain `cd`, which makes `gt -`
   # "previous repo" rather than "previous directory".
   if [[ "$1" == "-" ]]; then
     if [[ -z "$_GOTO_PREV" || ! -d "$_GOTO_PREV" ]]; then
@@ -25,7 +20,7 @@ gt() {
     return
   fi
 
-  # A rule, not a list of flags, so it can't drift. `gt -` returned above.
+  # `-` also matches `-*`; it returned above.
   if [[ "$1" == -* ]]; then
     gt-bin "$@"
     return
@@ -47,9 +42,6 @@ gt() {
 
   # `cd` to $PWD would set OLDPWD to $PWD, overwriting _GOTO_PREV.
   [[ "${target:A}" == "${PWD:A}" ]] && return 0
-
-  # Record where we're leaving before jumping, so `gt -` can bring us back to
-  # the previous repo. `cd` sets $OLDPWD to the dir we came from on success.
   cd "$target" && _GOTO_PREV="$OLDPWD"
 }
 
