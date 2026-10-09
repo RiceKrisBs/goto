@@ -22,6 +22,41 @@ source "$HOMEBREW_PREFIX/share/goto/goto.zsh"
 `$HOMEBREW_PREFIX` is exported by `brew shellenv`. If it isn't set in your
 shell, use the literal path that `brew --prefix` prints.
 
+### Install from source
+
+To install from source, you'll need a Rust toolchain v1.85 or newer
+([rustup](https://rustup.rs)), plus zsh.
+
+[`fzf`](https://github.com/junegunn/fzf) is optional, but needed for the picker
+when several repos match.
+
+```sh
+git clone https://github.com/RiceKrisBs/goto.git
+cd goto
+cargo install --path . --locked   # builds gt-bin into ~/.cargo/bin
+```
+
+Make sure `~/.cargo/bin` is on your `PATH`, then source the shell function from
+the clone in your `~/.zshrc` and open a new shell:
+
+```zsh
+source ~/path/to/goto/goto.zsh
+```
+
+Because that sources the file straight from the clone, edits to `goto.zsh` show
+up in your next shell. After changing the Rust code, re-run
+`cargo install --path . --locked` to update `gt-bin`.
+
+Check it worked with `gt --version`.
+
+### Development
+
+```sh
+cargo test                       # Rust tests
+zsh -f tests/goto_zsh_test.zsh   # tests for the gt shell function
+cargo fmt --check && cargo clippy --all-targets -- -D warnings   # what CI lints
+```
+
 ### Configure the search root
 
 `goto` searches `~/src` by default. If your repos live somewhere else, point it
