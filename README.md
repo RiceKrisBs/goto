@@ -100,9 +100,9 @@ gt -          # back to the repo you jumped from
 ```
 
 `gt -` returns you to the exact directory you left (subdirectory and all) before
-your last `gt` jump, and toggles: run it again to come back. It tracks `gt`
-jumps only, so any manual `cd`s in between don't throw it off. It's per-shell —
-a new terminal has no previous repo yet.
+your last `gt` jump, and toggles: run it again to come back. A manual `cd` in
+between becomes the other end of the toggle. It's per-shell — a new terminal has
+no previous repo yet.
 
 Run `gt --help` (or `-h`) for the full list of commands.
 

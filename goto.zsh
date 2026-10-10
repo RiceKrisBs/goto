@@ -16,6 +16,10 @@ gt() {
       print -u2 "gt: no previous directory yet"
       return 1
     fi
+    if [[ "${_GOTO_PREV:A}" == "${PWD:A}" ]]; then
+      print -u2 "gt: already in the previous directory"
+      return 1
+    fi
     cd "$_GOTO_PREV" && _GOTO_PREV="$OLDPWD"
     return
   fi

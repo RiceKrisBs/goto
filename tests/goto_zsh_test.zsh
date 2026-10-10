@@ -118,6 +118,17 @@ previous_dir_gone_reports_cleanly() {
   assert_eq "gt: no previous directory yet" "$msg" || return 1
 }
 
+toggle_to_current_dir_reports_cleanly() {
+  jump_stub; fzf_stub
+  cd $TMP/start
+  gt A
+  cd $TMP/start
+  local msg; msg="$(gt - 2>&1)"
+  assert_eq 1 $? "gt - to the current dir should exit 1" || return 1
+  assert_eq "gt: already in the previous directory" "$msg" || return 1
+  assert_eq $TMP/start $PWD "gt - should not move" || return 1
+}
+
 complete_flag_does_not_cd() {
   fzf_stub
   gt-bin() { print -l alpha beta }
@@ -226,6 +237,7 @@ tests=(
   jump_from_subdirectory_records_subdirectory
   previous_dir_unset_reports_cleanly
   previous_dir_gone_reports_cleanly
+  toggle_to_current_dir_reports_cleanly
   complete_flag_does_not_cd
   unknown_flag_passes_through
   single_candidate_skips_the_picker
