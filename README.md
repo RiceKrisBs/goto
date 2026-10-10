@@ -52,9 +52,9 @@ Check it worked with `gt --version`.
 ### Development
 
 ```sh
-cargo test                       # Rust tests
-zsh -f tests/goto_zsh_test.zsh   # tests for the gt shell function
-cargo fmt --check && cargo clippy --all-targets -- -D warnings   # what CI lints
+cargo test  # Rust tests
+cargo build && GT_BIN=target/debug/gt-bin zsh -f tests/goto_zsh_test.zsh  # gt shell function, incl. against the real binary
+cargo fmt --check && cargo clippy --all-targets -- -D warnings  # what CI lints
 ```
 
 ### Configure the search root
