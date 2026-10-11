@@ -9,7 +9,7 @@ Requires zsh, on macOS or Linux.
 ### Install
 
 ```sh
-brew install ricekrisbs/tap/goto
+brew install ricekrisbs/tap/goto-repo
 ```
 
 Homebrew can't edit your shell config, so finish by adding this to your
@@ -143,7 +143,7 @@ pressing Enter hands off to the same `fzf` picker used for any ambiguous match.
 ## Upgrading
 
 ```sh
-brew upgrade goto
+brew upgrade goto-repo
 ```
 
 If the `gt` shell function changed, open a new shell or re-source it:

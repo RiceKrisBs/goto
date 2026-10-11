@@ -13,8 +13,8 @@ versioning](https://semver.org/); dates are ISO 8601. On release, move the
 
 ### Changed
 
-- Install and upgrade via Homebrew: `brew install ricekrisbs/tap/goto`, then
-  `brew upgrade goto`.
+- Install and upgrade via Homebrew: `brew install ricekrisbs/tap/goto-repo`,
+  then `brew upgrade goto-repo`.
 - Unknown options are rejected (`gt: unknown option '--lst'`) instead of being
   treated as repo names.
 - Extra arguments are rejected (`gt foo bar`, `gt --list foo`) instead of being
