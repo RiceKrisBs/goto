@@ -93,10 +93,41 @@ For maintainers. Releases are published to the
 
    Tags can't be moved or deleted once pushed; a fix after release is a new
    version.
-3. Within a day, the tap's autobump workflow opens a PR updating the formula's
-   `url` and `sha256`. To skip the wait, open that PR by hand. A PR opened by
-   autobump doesn't start CI on its own: close and reopen it.
-4. When the PR's "brew test-bot" checks pass, run the tap's **brew pr-pull**
-   workflow with the PR number. It publishes the bottles and lands the formula
-   on `main`. Don't merge the PR with the merge button.
-5. Check that `brew upgrade goto-repo` picks up the new version.
+3. Get a formula PR open in the tap. Either:
+   - **Wait for autobump.** Within a day, the tap's "brew bump" workflow opens a
+     PR updating the formula's `url` and `sha256`. A PR it opens doesn't start
+     CI on its own: close and reopen it to start the checks. (If no PR appears,
+     check that "Allow GitHub Actions to create and approve pull requests" is on
+     in the tap's Settings → Actions → General, and look at the "brew bump" run.)
+   - **Or open it by hand,** in a clone of the tap:
+
+     ```sh
+     curl -sL https://github.com/RiceKrisBs/goto/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+     git switch -c goto-repo-X.Y.Z
+     # in Formula/goto-repo.rb: set url to the vX.Y.Z tarball and sha256 to the
+     # hash above. Leave the bottle block alone; publishing replaces it.
+     git commit -am "goto-repo X.Y.Z"
+     git push -u origin goto-repo-X.Y.Z
+     ```
+
+     Then open the PR on GitHub. A PR you open starts CI by itself.
+4. Wait for the PR's "brew test-bot" checks to pass. They build bottles for
+   Apple Silicon (`macos-15`) and Linux.
+5. In the tap's Actions tab, run **brew pr-pull** with the PR number, and the
+   PR's latest commit SHA as the expected head SHA. It uploads the bottles to a
+   release in the tap, adds their hashes to the formula, lands both commits on
+   `main`, and closes the PR. Don't merge the PR with the merge button.
+6. Check that `brew upgrade goto-repo` picks up the new version.
+
+If a step fails, the run's log is on the tap's Actions tab. A failing
+test-bot job on the PR is fixed by pushing to the PR branch, which reruns the
+checks; don't run brew pr-pull until they pass. If brew pr-pull itself fails,
+the PR stays open and the run can be retried.
+
+### Routine tap maintenance
+
+- **Dependabot** opens PRs that bump the pinned GitHub Actions in the tap's
+  workflows. Those don't touch a formula, so merge them with the normal merge
+  button once their checks pass.
+- **There is no Intel macOS bottle:** homebrew-core no longer ships Intel
+  bottles for `rust` or `fzf`, so Intel Macs build `goto-repo` from source.
