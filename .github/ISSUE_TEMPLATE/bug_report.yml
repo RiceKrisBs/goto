@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in gt doesn't work as expected
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `gt --version`
+      placeholder: gt 0.4.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it?
+      options:
+        - Homebrew (ricekrisbs/tap/goto-repo)
+        - cargo install from a clone
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and zsh version
+      description: e.g. macOS 15.6, and the output of `zsh --version`
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Any error messages or terminal output. Pasted as-is.
+      render: shell
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `GOTO_ROOT` and `GOTO_EXTRA_PRUNE` settings, if any.
