@@ -4,9 +4,7 @@ Jump to any git repo under `~/src` by its directory name.
 
 Requires zsh, on macOS or Linux.
 
-## Quickstart
-
-### Install
+## Install
 
 ```sh
 brew install ricekrisbs/tap/goto-repo
@@ -22,13 +20,12 @@ source "$HOMEBREW_PREFIX/share/goto/goto.zsh"
 `$HOMEBREW_PREFIX` is exported by `brew shellenv`. If it isn't set in your
 shell, use the literal path that `brew --prefix` prints.
 
-### Install from source
+<details>
+<summary>Installing without Homebrew</summary>
 
-To install from source, you'll need a Rust toolchain v1.85 or newer
-([rustup](https://rustup.rs)), plus zsh.
-
-[`fzf`](https://github.com/junegunn/fzf) is optional, but needed for the picker
-when several repos match.
+You'll need a Rust toolchain v1.85 or newer ([rustup](https://rustup.rs)), plus
+zsh. [`fzf`](https://github.com/junegunn/fzf) is optional, but needed for the
+picker when several repos match.
 
 ```sh
 git clone https://github.com/RiceKrisBs/goto.git
@@ -43,43 +40,15 @@ the clone in your `~/.zshrc` and open a new shell:
 source ~/path/to/goto/goto.zsh
 ```
 
-Because that sources the file straight from the clone, edits to `goto.zsh` show
-up in your next shell. After changing the Rust code, re-run
-`cargo install --path . --locked` to update `gt-bin`.
+Check it worked with `gt --version`. To update, `git pull` in the clone and
+re-run `cargo install --path . --locked`.
 
-Check it worked with `gt --version`.
+</details>
 
-### Development
+Already have `gt` installed with `cargo install`, or a copy at `~/.goto.zsh`?
+See [Migrating to Homebrew](MIGRATING.md).
 
-```sh
-cargo test  # Rust tests
-cargo build && GT_BIN=target/debug/gt-bin zsh -f tests/goto_zsh_test.zsh  # gt shell function, incl. against the real binary
-cargo fmt --check && cargo clippy --all-targets -- -D warnings  # what CI lints
-```
-
-### Configure the search root
-
-`goto` searches `~/src` by default. If your repos live somewhere else, point it
-there with `GOTO_ROOT` in your `~/.zshrc` (a leading `~` is expanded):
-
-```sh
-export GOTO_ROOT=~/dev
-```
-
-### Tune what the crawl skips
-
-The crawl always skips `node_modules`, `.terraform`, and `.git`. To skip more
-directories — matched by name, at any depth — list them comma-separated in
-`GOTO_EXTRA_PRUNE` in your `~/.zshrc`:
-
-```sh
-export GOTO_EXTRA_PRUNE=vendor,dist,.venv
-```
-
-Surrounding whitespace is trimmed, so `vendor, dist, .venv` works too. This only
-adds to the built-in list; the three defaults are always pruned.
-
-### Use
+## Use
 
 Jump to a repo by its directory name, wherever it sits in the tree:
 
@@ -106,19 +75,29 @@ no previous repo yet.
 
 Run `gt --help` (or `-h`) for the full list of commands.
 
-## How it works
+## Configure
 
-`goto` installs a binary called `gt-bin` that walks `~/src`, finds every git repo
-(any directory containing a `.git` entry, at any depth), and matches your query
-against the repo's directory name:
+### Search root
 
-- **Exact match** wins (`gt ripgrep` → the dir named exactly `ripgrep`).
-- If there's no exact match, it falls back to a **substring match** (`gt ripg` → `ripgrep`).
-- If **multiple** repos match, it prints them all and an `fzf` picker lets you choose.
-- If **nothing** matches, it prints a message and does nothing.
+`goto` searches `~/src` by default. If your repos live somewhere else, point it
+there with `GOTO_ROOT` in your `~/.zshrc` (a leading `~` is expanded):
 
-A child process can't change its parent shell's working directory, so `gt-bin`
-only _prints_ the target path — a small `gt` shell function does the actual `cd`.
+```sh
+export GOTO_ROOT=~/dev
+```
+
+### What the crawl skips
+
+The crawl always skips `node_modules`, `.terraform`, and `.git`. To skip more
+directories — matched by name, at any depth — list them comma-separated in
+`GOTO_EXTRA_PRUNE` in your `~/.zshrc`:
+
+```sh
+export GOTO_EXTRA_PRUNE=vendor,dist,.venv
+```
+
+Surrounding whitespace is trimmed, so `vendor, dist, .venv` works too. This only
+adds to the built-in list; the three defaults are always pruned.
 
 ## Tab completion
 
@@ -159,6 +138,20 @@ gt --version   # or: gt -v
 ```
 
 See [`CHANGELOG.md`](CHANGELOG.md) for what changed between versions.
+
+## How it works
+
+`goto` installs a binary called `gt-bin` that walks `~/src`, finds every git repo
+(any directory containing a `.git` entry, at any depth), and matches your query
+against the repo's directory name:
+
+- **Exact match** wins (`gt ripgrep` → the dir named exactly `ripgrep`).
+- If there's no exact match, it falls back to a **substring match** (`gt ripg` → `ripgrep`).
+- If **multiple** repos match, it prints them all and an `fzf` picker lets you choose.
+- If **nothing** matches, it prints a message and does nothing.
+
+A child process can't change its parent shell's working directory, so `gt-bin`
+only _prints_ the target path — a small `gt` shell function does the actual `cd`.
 
 ## Caching
 
@@ -201,7 +194,7 @@ exist.
 
 The crawl prunes `node_modules`, `.terraform`, and `.git` internals, plus any
 directory names you add via `GOTO_EXTRA_PRUNE` (see
-[Tune what the crawl skips](#tune-what-the-crawl-skips)).
+[What the crawl skips](#what-the-crawl-skips)).
 
 Directories the crawl can't read are skipped silently, and the exit status is
 still 0. If a repo you expect is missing from `gt --list`, check that every
@@ -210,6 +203,10 @@ directory on the way to it is readable.
 The crawl doesn't follow symlinks, so a repo reached through a symlinked
 directory isn't found. A repo nested inside another (a vendored checkout, say)
 is indexed alongside its parent.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
