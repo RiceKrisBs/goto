@@ -4,7 +4,7 @@ Notable changes to `goto`, newest first. Versions follow [semantic
 versioning](https://semver.org/); dates are ISO 8601. On release, move the
 `Unreleased` entries under a new version header.
 
-## Unreleased
+## 0.4.1 — 2026-10-12
 
 ### Fixed
 
