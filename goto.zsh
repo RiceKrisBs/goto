@@ -51,12 +51,15 @@ gt() {
 
 # Tab-complete `gt <name>` from the same index the jump uses. Matching is
 # case-insensitive and substring-anywhere (the `l:|=* r:|=*` matcher), to mirror
-# how `gt` itself resolves a name.
+# how `gt` itself resolves a name. Lowercase the typed word and match one-way:
+# the symmetric `m:{a-zA-Z}={A-Za-z}` can capitalize the inserted prefix when a
+# candidate also matches mid-name (`api<TAB>` with `my-api-tests` → `Api`).
 _gt() {
   (( CURRENT == 2 )) || return 1
   local -a repos
   repos=(${(f)"$(gt-bin --complete 2>/dev/null)"})
-  compadd -M 'm:{a-zA-Z}={A-Za-z} l:|=* r:|=*' -a repos
+  PREFIX=${(L)PREFIX} SUFFIX=${(L)SUFFIX}
+  compadd -M 'm:{a-z}={A-Za-z} l:|=* r:|=*' -a repos
 }
 
 # Register with the completion system. `compdef` only exists once `compinit` has

@@ -4,6 +4,14 @@ Notable changes to `goto`, newest first. Versions follow [semantic
 versioning](https://semver.org/); dates are ISO 8601. On release, move the
 `Unreleased` entries under a new version header.
 
+## Unreleased
+
+### Fixed
+
+- Tab completion no longer capitalizes the first letter of the name when the
+  typed text also matches the middle of another repo's name (`gt api<TAB>` with
+  `api` and `my-api-tests` inserted `Api`).
+
 ## 0.4.0 — 2026-10-10
 
 ### Added
