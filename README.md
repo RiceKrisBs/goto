@@ -23,7 +23,7 @@ shell, use the literal path that `brew --prefix` prints.
 <details>
 <summary>Installing without Homebrew</summary>
 
-You'll need a Rust toolchain v1.85 or newer ([rustup](https://rustup.rs)), plus
+You'll need a Rust toolchain v1.89 or newer ([rustup](https://rustup.rs)), plus
 zsh. [`fzf`](https://github.com/junegunn/fzf) is optional, but needed for the
 picker when several repos match.
 
@@ -147,6 +147,13 @@ against the repo's directory name:
 
 - **Exact match** wins (`gt ripgrep` → the dir named exactly `ripgrep`).
 - If there's no exact match, it falls back to a **substring match** (`gt ripg` → `ripgrep`).
+- If there's no substring match either, it tries a **close spelling**
+  (`gt rigprep` → `ripgrep`) and prints which repo it picked. Queries of 4–7
+  characters allow one typo, 8 or more allow two, and shorter queries allow
+  none. The match has to line up with the start of a word in the name (the
+  name's start, or after `-`, `_` or `.`), so `gt goto` won't land in `photos`.
+  A typo that is a substring of some other repo's name goes to that repo
+  instead.
 - If **multiple** repos match, it prints them all and an `fzf` picker lets you choose.
 - If **nothing** matches, it prints a message and does nothing.
 
@@ -158,13 +165,13 @@ only _prints_ the target path — a small `gt` shell function does the actual `c
 To keep jumps instant, `goto` caches the discovered repo list at
 `${XDG_CACHE_HOME:-~/.cache}/goto/index`:
 
-- The **first** call after the cache is empty (or after switching `GOTO_ROOT`)
-  crawls live and writes the cache — a few hundred milliseconds.
+- The **first** call after the cache is empty (or after changing `GOTO_ROOT` or
+  `GOTO_EXTRA_PRUNE`) crawls live and writes the cache — a few hundred milliseconds.
 - **Subsequent** calls read the cache (~2ms) and, in the background, kick off a
   detached re-crawl so newly cloned or removed repos are reflected next time.
   This means a brand-new repo is picked up on the _second_ `gt` after cloning it.
-- The cache records the root it was built for, so changing `GOTO_ROOT`
-  invalidates it automatically. There is only **one** cache file, shared by every
+- The cache records the root and prune list it was built with, so changing
+  `GOTO_ROOT` or `GOTO_EXTRA_PRUNE` invalidates it automatically. There is only **one** cache file, shared by every
   root — so if you alternate between two `GOTO_ROOT` values, each call
   invalidates the other's cache and every call pays for a cold crawl.
 - Caching needs somewhere to write. If `HOME` is unset and `XDG_CACHE_HOME`

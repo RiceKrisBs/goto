@@ -1,27 +1,32 @@
-use std::collections::HashSet;
 use std::env;
-use std::ffi::{OsStr, OsString};
-use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, ExitCode, Stdio};
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use ignore::{WalkBuilder, WalkState};
+mod cache;
+mod crawl;
+mod matching;
+mod scope;
+#[cfg(test)]
+mod test_util;
 
-// Directories the crawl never descends into: the built-in noise, plus any names
-// the user appends via $GOTO_EXTRA_PRUNE. The crawl walks hidden entries,
-// so `.git` here prevents it from being walked.
-const DEFAULT_PRUNE: &[&str] = &["node_modules", ".terraform", ".git"];
+use cache::{
+    RefreshLock, cache_older_than, cache_path, lock_refresh, read_cache_or_crawl, try_lock_refresh,
+    write_cache_at,
+};
+use crawl::crawl;
+use matching::{MatchKind, match_key, match_repos};
+use scope::{Scope, prune_from_env, resolve_root};
 
 const HELP: &str = "\
 gt — jump to any git repo under your source root by its directory name.
 
 Usage:
   gt <name>       Jump to the repo whose dir name matches <name> (exact match,
-                  else substring; an fzf picker opens if several match).
+                  else substring, else close spelling; an fzf picker opens if
+                  several match).
   gt -            Jump back to the previous repo (toggles with your last jump).
   gt --list       List every known repo, with paths.
   gt --reindex    Rebuild the repo index now.
@@ -38,9 +43,8 @@ your ~/.zshrc and open a new shell:
   source \"$HOMEBREW_PREFIX/share/goto/goto.zsh\"";
 
 // Cooldown after a refresh lands: skip spawning another background crawl if the
-// cache was rewritten within this window. (This is a post-refresh cooldown keyed
-// on the cache mtime, not a concurrency guard — a burst of calls against an old
-// cache can still spawn overlapping crawls, which is cheap enough not to matter.)
+// cache was rewritten within this window. Keyed on the cache mtime; overlapping
+// crawls are prevented separately, by the refresh lock.
 const REFRESH_DEBOUNCE: Duration = Duration::from_secs(3);
 
 const USAGE: &str = "usage: gt <name>   (see: gt --help)";
@@ -56,6 +60,9 @@ enum Command {
 #[derive(Debug, PartialEq)]
 enum RootedCommand {
     Reindex,
+    // Internal: the background re-crawl `jump` spawns. Unlike --reindex, it
+    // skips instead of waiting when another crawl is running.
+    Refresh,
     List,
     Complete,
     Jump(String),
@@ -100,7 +107,11 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    run(command, &root)
+    let scope = Scope {
+        root,
+        prune: prune_from_env(),
+    };
+    run(command, &scope)
 }
 
 fn parse_command(args: &[String]) -> Result<Command, String> {
@@ -111,6 +122,7 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
         "--version" | "-v" => Command::Version,
         "--help" | "-h" => Command::Help,
         "--reindex" => Command::Rooted(RootedCommand::Reindex),
+        "--refresh" => Command::Rooted(RootedCommand::Refresh),
         "--list" => Command::Rooted(RootedCommand::List),
         "--complete" => Command::Rooted(RootedCommand::Complete),
         "" => return Err(USAGE.to_string()),
@@ -127,24 +139,21 @@ fn parse_command(args: &[String]) -> Result<Command, String> {
     Ok(command)
 }
 
-fn run(command: RootedCommand, root: &Path) -> ExitCode {
+fn run(command: RootedCommand, scope: &Scope) -> ExitCode {
     match command {
         RootedCommand::Reindex => {
-            let repos = crawl(root);
-            let Some(path) = cache_path() else {
-                eprintln!("gt: nowhere to write the index (set XDG_CACHE_HOME or HOME)");
-                return ExitCode::FAILURE;
+            let _lock = lock_refresh();
+            return reindex(scope);
+        }
+        RootedCommand::Refresh => {
+            let _lock = match try_lock_refresh() {
+                RefreshLock::Busy => return ExitCode::SUCCESS,
+                lock => lock,
             };
-            if !write_cache_at(&path, root, &repos) {
-                eprintln!("gt: could not write the index to {}", path.display());
-                return ExitCode::FAILURE;
-            }
-            let n = repos.len();
-            let noun = if n == 1 { "repo" } else { "repos" };
-            eprintln!("gt: indexed {n} {noun} under {}", root.display());
+            return reindex(scope);
         }
         RootedCommand::List => {
-            let (repos, _) = read_cache_or_crawl(root);
+            let (repos, _) = read_cache_or_crawl(scope);
             for line in format_list(&sorted_repos(&repos)) {
                 println!("{line}");
             }
@@ -152,18 +161,35 @@ fn run(command: RootedCommand, root: &Path) -> ExitCode {
         // Off the background-refresh path since it runs on every <TAB>; a cold
         // cache still pays for a full crawl.
         RootedCommand::Complete => {
-            let (repos, _) = read_cache_or_crawl(root);
+            let (repos, _) = read_cache_or_crawl(scope);
             for name in completion_names(&repos) {
                 println!("{name}");
             }
         }
-        RootedCommand::Jump(query) => return jump(root, &query),
+        RootedCommand::Jump(query) => return jump(scope, &query),
     }
     ExitCode::SUCCESS
 }
 
-fn jump(root: &Path, query: &str) -> ExitCode {
-    let (repos, warm) = read_cache_or_crawl(root);
+// Crawl and write the index. Callers take the refresh lock first.
+fn reindex(scope: &Scope) -> ExitCode {
+    let repos = crawl(scope);
+    let Some(path) = cache_path() else {
+        eprintln!("gt: nowhere to write the index (set XDG_CACHE_HOME or HOME)");
+        return ExitCode::FAILURE;
+    };
+    if !write_cache_at(&path, scope, &repos) {
+        eprintln!("gt: could not write the index to {}", path.display());
+        return ExitCode::FAILURE;
+    }
+    let n = repos.len();
+    let noun = if n == 1 { "repo" } else { "repos" };
+    eprintln!("gt: indexed {n} {noun} under {}", scope.root.display());
+    ExitCode::SUCCESS
+}
+
+fn jump(scope: &Scope, query: &str) -> ExitCode {
+    let (repos, warm) = read_cache_or_crawl(scope);
     // The cache can name a repo that has since been deleted; the shell must not
     // be handed a path to `cd` into that's gone.
     let matches = match_repos(&repos, query, Path::exists);
@@ -174,42 +200,28 @@ fn jump(root: &Path, query: &str) -> ExitCode {
     //
     // Ordering invariant: must stay ahead of the no-match return below, or a
     // newly cloned repo is never indexed — the first `gt` for it always misses.
-    if warm && cache_older_than(REFRESH_DEBOUNCE) {
-        spawn_background_reindex(root);
+    if warm && cache_older_than(REFRESH_DEBOUNCE) && !refresh_running() {
+        spawn_background_reindex(&scope.root);
     }
 
-    if matches.is_empty() {
+    if matches.repos.is_empty() {
         eprintln!("gt: no repo matching '{query}'");
         return ExitCode::FAILURE;
     }
+    if matches.kind == MatchKind::Fuzzy {
+        match matches.repos.as_slice() {
+            [only] => eprintln!(
+                "gt: no repo matching '{query}'; using {}",
+                display_name(only)
+            ),
+            _ => eprintln!("gt: no repo matching '{query}'; showing close matches"),
+        }
+    }
 
-    for p in matches {
+    for p in matches.repos {
         println!("{}", p.display());
     }
     ExitCode::SUCCESS
-}
-
-// Exact name match, else substring. `keep` runs per tier and only on name
-// matches, so a rejected exact match falls through to the substring tier.
-fn match_repos<'a>(
-    repos: &'a [PathBuf],
-    query: &str,
-    keep: impl Fn(&Path) -> bool,
-) -> Vec<&'a PathBuf> {
-    let tier = |hit: &dyn Fn(&str) -> bool| {
-        let mut found: Vec<&PathBuf> = repos
-            .iter()
-            .filter(|p| match_key(p).is_some_and(|k| hit(&k)) && keep(p))
-            .collect();
-        found.sort();
-        found
-    };
-    let exact = tier(&|k| k == query);
-    if exact.is_empty() {
-        tier(&|k| k.contains(query))
-    } else {
-        exact
-    }
 }
 
 fn format_list(repos: &[&PathBuf]) -> Vec<String> {
@@ -251,148 +263,20 @@ fn sorted_repos(repos: &[PathBuf]) -> Vec<&PathBuf> {
     sorted
 }
 
-// Absolute because the cache stores the root: a relative one would match any
-// directory that happens to have the same relative path.
-fn resolve_root() -> Option<PathBuf> {
-    let root = resolve_root_from(env::var_os("GOTO_ROOT"), env::var_os("HOME"))?;
-    std::path::absolute(root).ok()
+// True while another process holds the refresh lock. Checked before spawning so
+// a burst of calls doesn't fork a refresh per call; the spawned refresh takes
+// the lock itself, so losing a race here still never runs two crawls at once.
+fn refresh_running() -> bool {
+    matches!(try_lock_refresh(), RefreshLock::Busy)
 }
 
-// An empty value is treated as unset: joining onto "" yields a relative path.
-fn resolve_root_from(goto_root: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    if let Some(val) = goto_root {
-        if !val.is_empty() {
-            return Some(expand_tilde_with(PathBuf::from(val), home.as_deref()));
-        }
-    }
-    home.filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join("src"))
-}
-
-fn expand_tilde_with(path: PathBuf, home: Option<&OsStr>) -> PathBuf {
-    let Some(home) = home.filter(|home| !home.is_empty()) else {
-        return path;
-    };
-    match path.strip_prefix("~") {
-        Ok(rest) => PathBuf::from(home).join(rest),
-        Err(_) => path,
-    }
-}
-
-// The leaf name lowercased, for matching and sorting; see `display_name` for output.
-fn match_key(p: &Path) -> Option<String> {
-    p.file_name().map(|n| n.to_string_lossy().to_lowercase())
-}
-
-// ---- cache and crawl ----
-
-fn cache_path() -> Option<PathBuf> {
-    cache_path_from(env::var_os("XDG_CACHE_HOME"), env::var_os("HOME"))
-}
-
-// One cache file for every root; the recorded root line distinguishes them.
-fn cache_path_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let dir = if let Some(xdg) = xdg.filter(|v| !v.is_empty()) {
-        PathBuf::from(xdg)
-    } else {
-        PathBuf::from(home.filter(|v| !v.is_empty())?).join(".cache")
-    };
-    Some(dir.join("goto").join("index"))
-}
-
-// Cache format: line 1 is the root the cache was built for, remaining lines are
-// repo paths.
-fn serialize_cache(root: &Path, repos: &[PathBuf]) -> String {
-    let mut body = String::new();
-    body.push_str(&root.display().to_string());
-    body.push('\n');
-    for r in repos {
-        let line = r.display().to_string();
-        // Can't round-trip in a line-delimited format: one repo would read as two.
-        if line.contains('\n') {
-            continue;
-        }
-        body.push_str(&line);
-        body.push('\n');
-    }
-    body
-}
-
-// Parse cached contents, returning the repo list only if the recorded root
-// matches `root`. Any mismatch (or empty input) → None. Only the root line is
-// validated.
-fn parse_cache(contents: &str, root: &Path) -> Option<Vec<PathBuf>> {
-    let mut lines = contents.lines();
-    let stored_root = lines.next()?;
-    if Path::new(stored_root) != root {
-        return None;
-    }
-    Some(lines.filter(|l| !l.is_empty()).map(PathBuf::from).collect())
-}
-
-fn read_cache(root: &Path) -> Option<Vec<PathBuf>> {
-    read_cache_at(&cache_path()?, root)
-}
-
-fn read_cache_at(path: &Path, root: &Path) -> Option<Vec<PathBuf>> {
-    let contents = fs::read_to_string(path).ok()?;
-    parse_cache(&contents, root)
-}
-
-fn write_cache(root: &Path, repos: &[PathBuf]) {
-    if let Some(path) = cache_path() {
-        write_cache_at(&path, root, repos);
-    }
-}
-
-fn write_cache_at(path: &Path, root: &Path, repos: &[PathBuf]) -> bool {
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    let Some(name) = path.file_name() else {
-        return false;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return false;
-    }
-
-    let body = serialize_cache(root, repos);
-
-    // Write to a per-process temp file, then atomically rename into place so a
-    // concurrent reader never sees a partial file.
-    let tmp = path.with_file_name(format!(
-        "{}.tmp.{}",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    let installed = fs::File::create(&tmp)
-        .is_ok_and(|mut f| f.write_all(body.as_bytes()).is_ok() && fs::rename(&tmp, path).is_ok());
-    if !installed {
-        let _ = fs::remove_file(&tmp);
-    }
-    installed
-}
-
-fn cache_older_than(age: Duration) -> bool {
-    let Some(path) = cache_path() else {
-        return true;
-    };
-    let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
-        return true;
-    };
-    SystemTime::now()
-        .duration_since(modified)
-        .map(|d| d > age)
-        .unwrap_or(true)
-}
-
-// Re-exec ourselves with --reindex, fully detached: no inherited stdio (so the
+// Re-exec ourselves with --refresh, fully detached: no inherited stdio (so the
 // shell's $(...) doesn't block on our pipe) and a fresh process group (so job
 // control / SIGHUP doesn't reach it). We never wait on it.
 fn spawn_background_reindex(root: &Path) {
     let Ok(exe) = env::current_exe() else { return };
     let _ = process::Command::new(exe)
-        .arg("--reindex")
+        .arg("--refresh")
         .env("GOTO_ROOT", root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -401,133 +285,10 @@ fn spawn_background_reindex(root: &Path) {
         .spawn();
 }
 
-fn crawl(root: &Path) -> Vec<PathBuf> {
-    discover_repos(root, prune_set(env::var_os("GOTO_EXTRA_PRUNE")))
-}
-
-fn crawl_and_cache(root: &Path) -> Vec<PathBuf> {
-    let repos = crawl(root);
-    write_cache(root, &repos);
-    repos
-}
-
-// False means cold: the crawl just wrote a fresh cache, so the caller must not
-// then refresh.
-fn read_cache_or_crawl(root: &Path) -> (Vec<PathBuf>, bool) {
-    match read_cache(root) {
-        Some(repos) => (repos, true),
-        None => (crawl_and_cache(root), false),
-    }
-}
-
-fn prune_set(extra: Option<OsString>) -> HashSet<String> {
-    let mut set: HashSet<String> = DEFAULT_PRUNE.iter().map(|s| s.to_string()).collect();
-    if let Some(extra) = extra {
-        for name in extra.to_string_lossy().split(',') {
-            let name = name.trim();
-            if !name.is_empty() {
-                set.insert(name.to_string());
-            }
-        }
-    }
-    set
-}
-
-fn discover_repos(root: &Path, prune: HashSet<String>) -> Vec<PathBuf> {
-    let found = Mutex::new(Vec::new());
-
-    WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(false)
-        .git_global(false)
-        .git_exclude(false)
-        .parents(false)
-        .filter_entry(move |entry| {
-            // Prune noisy/irrelevant dirs; never descend into them. A name that
-            // isn't valid UTF-8 can't be matched, so it's kept rather than pruned.
-            entry
-                .file_name()
-                .to_str()
-                .is_none_or(|n| !prune.contains(n))
-        })
-        .build_parallel()
-        .run(|| {
-            let found = &found;
-            Box::new(move |result| {
-                if let Ok(entry) = result {
-                    let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
-                    if is_dir {
-                        let path = entry.path();
-                        // A repo is any dir containing a `.git` entry (dir or file).
-                        if path.join(".git").exists() {
-                            found.lock().unwrap().push(path.to_path_buf());
-                        }
-                    }
-                }
-                WalkState::Continue
-            })
-        });
-
-    found.into_inner().unwrap()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
-
-    fn repos(paths: &[&str]) -> Vec<PathBuf> {
-        paths.iter().map(PathBuf::from).collect()
-    }
-
-    // A fresh directory per test, so the filesystem cases can run in parallel.
-    fn temp_base(name: &str) -> PathBuf {
-        let base = env::temp_dir().join(format!("goto-test-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        base
-    }
-
-    fn build_probe_tree(base: &Path) -> PathBuf {
-        let root = base.join("root");
-        for p in [
-            "normal-repo/.git",
-            "node_modules/pruned-repo/.git",
-            "vendor/vendored-repo/.git",
-            "deep/a/b/c/d/e/f/g/deep-repo/.git",
-            ".hidden-dir/hidden-repo/.git",
-            "spaces in name/.git",
-        ] {
-            fs::create_dir_all(root.join(p)).unwrap();
-        }
-
-        // `.git` as a file, i.e. a worktree or submodule.
-        fs::create_dir_all(root.join("worktree-repo")).unwrap();
-        fs::write(root.join("worktree-repo/.git"), "gitdir: /elsewhere\n").unwrap();
-
-        fs::create_dir_all(base.join("elsewhere/linked-repo/.git")).unwrap();
-        symlink(base.join("elsewhere/linked-repo"), root.join("linked-repo")).unwrap();
-
-        root
-    }
-
-    fn discovered_names(root: &Path, extra_prune: Option<&str>) -> Vec<String> {
-        let prune = prune_set(extra_prune.map(OsString::from));
-        let mut names: Vec<String> = discover_repos(root, prune)
-            .iter()
-            .map(|p| display_name(p))
-            .collect();
-        names.sort();
-        names
-    }
-
-    fn paths(found: &[&PathBuf]) -> Vec<String> {
-        found.iter().map(|p| p.display().to_string()).collect()
-    }
-
-    fn matched<'a>(r: &'a [PathBuf], query: &str) -> Vec<&'a PathBuf> {
-        match_repos(r, query, |_| true)
-    }
+    use crate::test_util::{paths, repos};
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()
@@ -544,6 +305,7 @@ mod tests {
             ("--help", Command::Help),
             ("-h", Command::Help),
             ("--reindex", Command::Rooted(Reindex)),
+            ("--refresh", Command::Rooted(Refresh)),
             ("--list", Command::Rooted(List)),
             ("--complete", Command::Rooted(Complete)),
         ] {
@@ -554,8 +316,8 @@ mod tests {
     #[test]
     fn a_name_is_a_lowercased_jump() {
         assert_eq!(
-            parse_command(&args(&["Nitro"])),
-            Ok(Command::Rooted(RootedCommand::Jump("nitro".into())))
+            parse_command(&args(&["Neovim"])),
+            Ok(Command::Rooted(RootedCommand::Jump("neovim".into())))
         );
     }
 
@@ -583,80 +345,6 @@ mod tests {
         }
     }
 
-    // ---- match_repos ----
-
-    #[test]
-    fn deleted_repos_are_not_jump_targets() {
-        let base = temp_base("existing");
-        fs::create_dir_all(base.join("a/nitro")).unwrap();
-        let r = vec![base.join("a/nitro"), base.join("b/nitro")];
-        assert_eq!(
-            match_repos(&r, "nitro", Path::exists),
-            [&base.join("a/nitro")]
-        );
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn deleted_exact_match_falls_back_to_substring() {
-        let base = temp_base("fallback");
-        fs::create_dir_all(base.join("b/nitro-tools")).unwrap();
-        let r = vec![base.join("a/nitro"), base.join("b/nitro-tools")];
-        assert_eq!(
-            match_repos(&r, "nitro", Path::exists),
-            [&base.join("b/nitro-tools")]
-        );
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn exact_name_match() {
-        let r = repos(&["/src/a/nitro", "/src/b/other"]);
-        assert_eq!(paths(&matched(&r, "nitro")), ["/src/a/nitro"]);
-    }
-
-    #[test]
-    fn match_is_case_insensitive() {
-        let r = repos(&["/src/a/Nitro"]);
-        assert_eq!(paths(&matched(&r, "nitro")), ["/src/a/Nitro"]);
-    }
-
-    #[test]
-    fn falls_back_to_substring_when_no_exact_match() {
-        let r = repos(&["/src/developers/hw-admin", "/src/x/unrelated"]);
-        assert_eq!(paths(&matched(&r, "adm")), ["/src/developers/hw-admin"]);
-    }
-
-    #[test]
-    fn exact_match_wins_over_substring() {
-        let r = repos(&["/src/a/skills", "/src/b/skills-extra"]);
-        assert_eq!(paths(&matched(&r, "skills")), ["/src/a/skills"]);
-    }
-
-    #[test]
-    fn ambiguous_exact_matches_return_all_sorted() {
-        let r = repos(&["/src/kris/skills", "/src/ai/skills"]);
-        assert_eq!(
-            paths(&matched(&r, "skills")),
-            ["/src/ai/skills", "/src/kris/skills"]
-        );
-    }
-
-    #[test]
-    fn no_match_returns_empty() {
-        let r = repos(&["/src/a/nitro"]);
-        assert!(matched(&r, "zzz").is_empty());
-    }
-
-    #[test]
-    fn matches_deeply_nested_repo() {
-        let r = repos(&["/src/devops/terraform/modules/aws-redis"]);
-        assert_eq!(
-            paths(&matched(&r, "aws-redis")),
-            ["/src/devops/terraform/modules/aws-redis"]
-        );
-    }
-
     // ---- sorted_repos ----
 
     #[test]
@@ -680,18 +368,18 @@ mod tests {
 
     #[test]
     fn list_pads_names_so_paths_align() {
-        let r = repos(&["/src/devops/ansible", "/src/a/nitro"]);
+        let r = repos(&["/src/acme/ansible", "/src/a/neovim"]);
         let sorted = sorted_repos(&r);
         assert_eq!(
             format_list(&sorted),
-            ["ansible  /src/devops/ansible", "nitro    /src/a/nitro",]
+            ["ansible  /src/acme/ansible", "neovim   /src/a/neovim",]
         );
     }
 
     #[test]
     fn list_preserves_name_case() {
-        let r = repos(&["/src/a/Nitro"]);
-        assert_eq!(format_list(&sorted_repos(&r)), ["Nitro  /src/a/Nitro"]);
+        let r = repos(&["/src/a/Neovim"]);
+        assert_eq!(format_list(&sorted_repos(&r)), ["Neovim  /src/a/Neovim"]);
     }
 
     #[test]
@@ -703,8 +391,8 @@ mod tests {
 
     #[test]
     fn completion_names_are_sorted_leaf_names() {
-        let r = repos(&["/src/z/nitro", "/src/a/ansible"]);
-        assert_eq!(completion_names(&r), ["ansible", "nitro"]);
+        let r = repos(&["/src/z/neovim", "/src/a/ansible"]);
+        assert_eq!(completion_names(&r), ["ansible", "neovim"]);
     }
 
     #[test]
@@ -724,274 +412,7 @@ mod tests {
 
     #[test]
     fn completion_names_preserve_case() {
-        let r = repos(&["/src/a/Nitro"]);
-        assert_eq!(completion_names(&r), ["Nitro"]);
-    }
-
-    // ---- match_key ----
-
-    #[test]
-    fn match_key_lowercases_leaf() {
-        assert_eq!(match_key(Path::new("/a/B/Nitro")), Some("nitro".into()));
-    }
-
-    // ---- expand_tilde_with ----
-
-    #[test]
-    fn tilde_expands_to_home() {
-        let got = expand_tilde_with(PathBuf::from("~/code"), Some(OsStr::new("/home/kris")));
-        assert_eq!(got, PathBuf::from("/home/kris/code"));
-    }
-
-    #[test]
-    fn bare_tilde_expands_to_home() {
-        let got = expand_tilde_with(PathBuf::from("~"), Some(OsStr::new("/home/kris")));
-        assert_eq!(got, PathBuf::from("/home/kris"));
-    }
-
-    #[test]
-    fn absolute_path_is_left_alone() {
-        let got = expand_tilde_with(PathBuf::from("/etc/foo"), Some(OsStr::new("/home/kris")));
-        assert_eq!(got, PathBuf::from("/etc/foo"));
-    }
-
-    #[test]
-    fn tilde_without_home_is_left_alone() {
-        let got = expand_tilde_with(PathBuf::from("~/code"), None);
-        assert_eq!(got, PathBuf::from("~/code"));
-    }
-
-    // ---- resolve_root_from ----
-
-    #[test]
-    fn root_defaults_to_home_src() {
-        let got = resolve_root_from(None, Some(OsString::from("/home/kris")));
-        assert_eq!(got, Some(PathBuf::from("/home/kris/src")));
-    }
-
-    #[test]
-    fn goto_root_overrides_default_and_expands_tilde() {
-        let got = resolve_root_from(
-            Some(OsString::from("~/code")),
-            Some(OsString::from("/home/kris")),
-        );
-        assert_eq!(got, Some(PathBuf::from("/home/kris/code")));
-    }
-
-    #[test]
-    fn empty_goto_root_falls_back_to_default() {
-        let got = resolve_root_from(Some(OsString::new()), Some(OsString::from("/home/kris")));
-        assert_eq!(got, Some(PathBuf::from("/home/kris/src")));
-    }
-
-    #[test]
-    fn no_home_and_no_goto_root_is_none() {
-        assert_eq!(resolve_root_from(None, None), None);
-    }
-
-    #[test]
-    fn empty_home_is_treated_as_unset() {
-        // Not Some("src"): joining onto "" would give a relative root, pointing
-        // the crawl at whatever ./src happens to be in $PWD.
-        assert_eq!(resolve_root_from(None, Some(OsString::new())), None);
-        assert_eq!(
-            resolve_root_from(Some(OsString::new()), Some(OsString::new())),
-            None
-        );
-    }
-
-    #[test]
-    fn tilde_with_empty_home_is_left_alone() {
-        let got = expand_tilde_with(PathBuf::from("~/code"), Some(OsStr::new("")));
-        assert_eq!(got, PathBuf::from("~/code"));
-    }
-
-    // ---- prune_set ----
-
-    #[test]
-    fn prune_defaults_present_without_env() {
-        let set = prune_set(None);
-        assert!(set.contains("node_modules"));
-        assert!(set.contains(".terraform"));
-        assert!(set.contains(".git"));
-        assert_eq!(set.len(), 3);
-    }
-
-    #[test]
-    fn prune_appends_extra_dirs_to_defaults() {
-        let set = prune_set(Some(OsString::from("vendor,dist")));
-        assert!(set.contains("vendor"));
-        assert!(set.contains("dist"));
-        assert!(set.contains("node_modules"));
-        assert_eq!(set.len(), 5);
-    }
-
-    #[test]
-    fn prune_trims_whitespace_and_drops_empties() {
-        let set = prune_set(Some(OsString::from(" vendor , , dist ,")));
-        assert!(set.contains("vendor"));
-        assert!(set.contains("dist"));
-        assert!(!set.contains(""));
-        assert_eq!(set.len(), 5);
-    }
-
-    #[test]
-    fn prune_empty_env_adds_nothing() {
-        assert_eq!(prune_set(Some(OsString::new())).len(), 3);
-    }
-
-    // ---- cache serialization ----
-
-    #[test]
-    fn cache_round_trips() {
-        let root = Path::new("/home/kris/src");
-        let r = repos(&["/home/kris/src/a/nitro", "/home/kris/src/b/hw-admin"]);
-        let serialized = serialize_cache(root, &r);
-        assert_eq!(parse_cache(&serialized, root), Some(r));
-    }
-
-    #[test]
-    fn cache_rejected_when_root_differs() {
-        let serialized = serialize_cache(Path::new("/home/kris/src"), &repos(&["/x/y"]));
-        assert_eq!(parse_cache(&serialized, Path::new("/other/root")), None);
-    }
-
-    #[test]
-    fn empty_cache_parses_to_no_repos() {
-        let serialized = serialize_cache(Path::new("/home/kris/src"), &[]);
-        assert_eq!(
-            parse_cache(&serialized, Path::new("/home/kris/src")),
-            Some(vec![])
-        );
-    }
-
-    #[test]
-    fn empty_contents_is_none() {
-        assert_eq!(parse_cache("", Path::new("/home/kris/src")), None);
-    }
-
-    #[test]
-    fn paths_containing_a_newline_are_not_cached() {
-        // The line-delimited format can't round-trip them: `bad\nname` would read
-        // back as `bad` plus a bogus relative `name`.
-        let root = Path::new("/home/kris/src");
-        let r = repos(&["/home/kris/src/bad\nname", "/home/kris/src/ok"]);
-        let serialized = serialize_cache(root, &r);
-        assert_eq!(
-            parse_cache(&serialized, root),
-            Some(repos(&["/home/kris/src/ok"]))
-        );
-    }
-
-    // ---- discover_repos ----
-
-    #[test]
-    fn discover_repos_finds_repos_and_prunes_noise() {
-        let base = temp_base("discover");
-        let root = build_probe_tree(&base);
-        assert_eq!(
-            discovered_names(&root, None),
-            [
-                "deep-repo",
-                "hidden-repo",
-                "normal-repo",
-                "spaces in name",
-                "vendored-repo",
-                "worktree-repo",
-            ]
-        );
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn discover_repos_skips_symlinked_repos() {
-        let base = temp_base("symlink");
-        let root = build_probe_tree(&base);
-        let names = discovered_names(&root, None);
-        assert!(root.join("linked-repo/.git").exists());
-        assert!(!names.contains(&"linked-repo".to_string()), "got {names:?}");
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn discover_repos_honours_extra_prune() {
-        let base = temp_base("extra-prune");
-        let root = build_probe_tree(&base);
-        let names = discovered_names(&root, Some("vendor"));
-        assert!(
-            !names.contains(&"vendored-repo".to_string()),
-            "got {names:?}"
-        );
-        assert!(names.contains(&"normal-repo".to_string()), "got {names:?}");
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    // ---- cache_path_from ----
-
-    #[test]
-    fn cache_path_prefers_xdg() {
-        let got = cache_path_from(Some(OsString::from("/x")), Some(OsString::from("/h")));
-        assert_eq!(got, Some(PathBuf::from("/x/goto/index")));
-    }
-
-    #[test]
-    fn cache_path_falls_back_to_home_dot_cache() {
-        let got = cache_path_from(None, Some(OsString::from("/h")));
-        assert_eq!(got, Some(PathBuf::from("/h/.cache/goto/index")));
-    }
-
-    #[test]
-    fn cache_path_treats_empty_values_as_unset() {
-        let got = cache_path_from(Some(OsString::new()), Some(OsString::from("/h")));
-        assert_eq!(got, Some(PathBuf::from("/h/.cache/goto/index")));
-        assert_eq!(cache_path_from(None, Some(OsString::new())), None);
-    }
-
-    #[test]
-    fn cache_path_without_xdg_or_home_is_none() {
-        assert_eq!(cache_path_from(None, None), None);
-    }
-
-    // ---- cache file I/O ----
-
-    #[test]
-    fn cache_round_trips_through_the_filesystem() {
-        let base = temp_base("cache-rt");
-        let path = base.join("goto").join("index");
-        let root = Path::new("/home/kris/src");
-        let r = repos(&["/home/kris/src/a/nitro", "/home/kris/src/b/hw-admin"]);
-
-        assert!(write_cache_at(&path, root, &r));
-        assert!(
-            path.exists(),
-            "write_cache_at should create missing parents"
-        );
-        assert_eq!(read_cache_at(&path, root), Some(r));
-        assert_eq!(read_cache_at(&path, Path::new("/other/root")), None);
-
-        let leftovers: Vec<String> = fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n.contains("tmp"))
-            .collect();
-        assert!(leftovers.is_empty(), "left {leftovers:?} behind");
-
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn unwritable_cache_reports_failure() {
-        let base = temp_base("cache-unwritable");
-        fs::write(base.join("file"), "").unwrap();
-        let path = base.join("file/goto/index");
-        assert!(!write_cache_at(&path, Path::new("/r"), &repos(&["/r/a"])));
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn reading_a_missing_cache_file_is_none() {
-        let base = temp_base("cache-missing");
-        assert_eq!(read_cache_at(&base.join("absent"), Path::new("/r")), None);
-        let _ = fs::remove_dir_all(&base);
+        let r = repos(&["/src/a/Neovim"]);
+        assert_eq!(completion_names(&r), ["Neovim"]);
     }
 }
