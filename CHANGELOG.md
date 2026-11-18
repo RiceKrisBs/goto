@@ -4,6 +4,28 @@ Notable changes to `goto`, newest first. Versions follow [semantic
 versioning](https://semver.org/); dates are ISO 8601. On release, move the
 `Unreleased` entries under a new version header.
 
+## Unreleased
+
+### Added
+
+- A query with no exact or substring match now jumps to the closest spelling
+  (`gt dashbaord` → `dashboard`) and prints which repo it picked. Ties open
+  the `fzf` picker.
+
+### Fixed
+
+- Changing `GOTO_EXTRA_PRUNE` takes effect on the next call. Before, the first
+  call after the change still answered from the old index.
+- Background re-crawls no longer pile up. A burst of `gt` calls, such as a
+  script calling `gt-bin` in a loop, could start one full crawl per call and
+  run dozens at once. Now only one crawl runs at a time, and
+  `gt --reindex` waits for a running crawl rather than starting a second.
+
+### Changed
+
+- The minimum supported Rust version is now 1.89, for the standard library's
+  file locking.
+
 ## 0.4.1 — 2026-10-12
 
 ### Fixed

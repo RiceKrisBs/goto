@@ -12,11 +12,12 @@ Contributions are released under the project's [MIT license](LICENSE).
 ## What a pull request needs
 
 - **Tests.** A bug fix comes with a test that fails without the fix. Rust tests
-  live in `mod tests` at the bottom of `src/main.rs`; tests for the `gt` shell
-  function live in `tests/goto_zsh_test.zsh`.
+  live in a `mod tests` at the bottom of the `src/` file they cover, with
+  shared helpers in `src/test_util.rs`; tests for the `gt` shell function live
+  in `tests/goto_zsh_test.zsh`.
 - **Green CI.** CI runs formatting, clippy with warnings as errors, both test
   suites on Linux and macOS, and a build on the minimum supported Rust version.
-- **The minimum supported Rust version stays 1.85** unless there's a reason to
+- **The minimum supported Rust version stays 1.89** unless there's a reason to
   raise it that's worth discussing in an issue. Don't raise it to silence a lint.
 - **A CHANGELOG entry** for anything a user would notice, under an
   `## Unreleased` heading at the top of [`CHANGELOG.md`](CHANGELOG.md) (add the
@@ -25,7 +26,7 @@ Contributions are released under the project's [MIT license](LICENSE).
 
 ## Development setup
 
-You'll need a Rust toolchain v1.85 or newer ([rustup](https://rustup.rs)), zsh,
+You'll need a Rust toolchain v1.89 or newer ([rustup](https://rustup.rs)), zsh,
 and [`fzf`](https://github.com/junegunn/fzf).
 
 ```sh
